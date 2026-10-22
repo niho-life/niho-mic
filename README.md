@@ -50,7 +50,23 @@ Bluetooth マイクを macOS に接続し、**システム設定 → サウン�
 jq -r 'select(.decision == "publish") | .text' "$HOME/Library/Application Support/life.niho.mic/logs/"*.jsonl
 ```
 
-音声は72時間、文字起こしは168時間で削除します。稼働中と次回起動時に期限を確認します。停止中に期限が過ぎた場合は `.build/release/niho-mic prune` を実行できます。短文ログの削除は `.build/release/niho-mic delete-logs --confirm` です。
+文字起こし・見送り理由・要約候補・最終短文を順に確認するときは次を使います。区切りIDも表示されます。生の文字起こしが端末に出るので、画面共有中は注意してください。
+
+```bash
+.build/release/niho-mic inspect --latest 5
+```
+
+要約の指示文は `Sources/NihoMicCore/LocalModels.swift` の `instructions` です。次の方法ならソースを変更・再ビルドせず、保存済み文字起こしに対して何度でも試せます。`preview` は採用ログを変更せず、重複判定を除く現在の出力検査まで実行します。
+
+```bash
+.build/release/niho-mic prompt > "$HOME/Documents/niho-mic-prompt.txt"
+open -e "$HOME/Documents/niho-mic-prompt.txt"
+.build/release/niho-mic preview --segment '<inspectに表示された64桁の区切りID>' --prompt-file "$HOME/Documents/niho-mic-prompt.txt"
+```
+
+`prompt` で出る文章は話題抽出の指示です。二段目の安全性確認の指示は同じ `LocalModels.swift` の `outputSafetyInstructions` にあります。候補の個人情報・センシティブ内容・140字などの最終検査は `preview` でも有効です。編集するファイルには実際の会話や文字起こしを貼り付けず、公開リポジトリにも追加しないでください。
+
+音声は72時間、文字起こしと要約候補の診断情報は168時間で削除します。稼働中と次回起動時に期限を確認します。停止中に期限が過ぎた場合は `.build/release/niho-mic prune` を実行できます。短文ログの削除は `.build/release/niho-mic delete-logs --confirm` です。
 
 ## 開発
 

@@ -16,6 +16,18 @@ public struct LocalRecord: Codable, Sendable {
     }
 }
 
+/// Ephemeral review data. It is kept beside the raw transcript and expires with it.
+public struct ReviewTrace: Codable, Sendable {
+    public let candidateTopic: String
+    public let candidateText: String
+    public let normalizedText: String
+    public let gateReason: String
+    public init(candidateTopic: String = "", candidateText: String = "", normalizedText: String = "", gateReason: String) {
+        self.candidateTopic = candidateTopic; self.candidateText = candidateText
+        self.normalizedText = normalizedText; self.gateReason = gateReason
+    }
+}
+
 /// One process owns this store. A completed JSONL record is the durable deduplication receipt.
 public final class PrivateStore {
     public let root: URL
@@ -128,6 +140,27 @@ public final class PrivateStore {
         // A retry must not restart the retention clock.
         if !manager.fileExists(atPath: url.path) { try Data(text.utf8).write(to: url, options: .atomic) }
         try secure(url)
+    }
+
+    public func transcript(id: String) throws -> String? {
+        let url = transcriptDirectory.appendingPathComponent(id + ".txt")
+        guard manager.fileExists(atPath: url.path) else { return nil }
+        try secure(url)
+        return try String(contentsOf: url, encoding: .utf8)
+    }
+
+    public func writeReviewTrace(_ trace: ReviewTrace, id: String) throws {
+        let url = transcriptDirectory.appendingPathComponent(id + ".review.json")
+        // A retry must not restart the seven-day retention clock.
+        if !manager.fileExists(atPath: url.path) { try encoder.encode(trace).write(to: url, options: .atomic) }
+        try secure(url)
+    }
+
+    public func reviewTrace(id: String) throws -> ReviewTrace? {
+        let url = transcriptDirectory.appendingPathComponent(id + ".review.json")
+        guard manager.fileExists(atPath: url.path) else { return nil }
+        try secure(url)
+        return try decoder.decode(ReviewTrace.self, from: Data(contentsOf: url))
     }
 
     public func pendingAudio() throws -> [URL] {

@@ -1,0 +1,16 @@
+.build/
+.swiftpm/
+.DS_Store
+.env
+.env.*
+!.env.example
+data/
+recordings/
+transcripts/
+logs/
+*.caf
+*.m4a
+*.wav
+*.mp3
+*.aiff
+*.jsonl

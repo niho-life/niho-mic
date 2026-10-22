@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+<key>CFBundleIdentifier</key><string>life.niho.mic</string>
+<key>CFBundleName</key><string>niho-mic</string>
+<key>NSMicrophoneUsageDescription</key><string>同意を得た場の会話を、指定した入力機器から Mac 内だけで録音します。</string>
+<key>NSSpeechRecognitionUsageDescription</key><string>同意を得た録音を Mac 内だけで日本語に文字起こしします。</string>
+</dict></plist>

@@ -15,6 +15,7 @@ struct NihoMic {
     niho-mic install-speech-model
     niho-mic run --input <機器UID> [--segment-seconds <2〜300>] [--asr apple|whisper|gemini]
     niho-mic once --audio <音声ファイル> [--asr apple|whisper|gemini]
+    niho-mic audio-check --audio <音声ファイル>
     niho-mic transcribe --audio <音声ファイル> [--asr apple|whisper|gemini]
     niho-mic review-audio --audio <音声ファイル> [--asr apple|whisper|gemini] [--selection-prompt-file <ファイル>] [--prompt-file <ファイル>]
     niho-mic inspect [--latest <1〜50>]
@@ -26,8 +27,9 @@ struct NihoMic {
     niho-mic help
 
     録音は運営者が目的を説明し、参加者の同意を得てから手動で開始してください。
-    run は既定120秒（指定可能範囲2〜300秒）で区切ります。Ctrl-C で録音を止め、最後の区切りを処理します。
-    文字起こしは既定 apple。--asr whisper は無料の Mac 内処理、--asr gemini は音声を Google へ送る明示選択です。自動切替はしません。
+    run は既定180秒（指定可能範囲2〜300秒）で区切り、録音を続けながら直前の区切りを処理します。Ctrl-C で録音を止め、最後の区切りを処理します。
+    無音・雑音をMac内で判定し、発話が足りない区切りは文字起こし前に見送ります。audio-check で判定だけ試せます。
+    文字起こしは既定 apple。--asr whisper は無料の Mac 内処理です。--asr gemini は比較実験用で音声を Google へ送ります。消費者向けAntigravityアカウントでの外部アプリ連携は公式FAQで非サポートです。自動切替はしません。
     指定機器の切断、既定入力や入力設定の変更を検出すると停止します。
     once、transcribe、review-audio は2〜300秒の録音が対象です。元ファイルは変更しません。
     transcribe は要約・保存せず、生の文字起こしを端末に表示します。画面共有中は注意してください。
@@ -90,6 +92,8 @@ struct NihoMic {
             catch { print("Whisper: unavailable (README の準備手順を確認)") }
             do { try GeminiASR.requireReady(); print("Gemini CLI: installed (ログインとモデルの利用可否は実行時に確認)") }
             catch { print("Gemini CLI: unavailable (README の準備手順を確認)") }
+            do { try AudioQuality.requireReady(); print("Mac 内の発話判定: ready") }
+            catch { print("Mac 内の発話判定: unavailable") }
             print("選択した文字起こし: \(asr.rawValue)")
             let model = SystemLanguageModel.default
             print("Mac 内 AI: \(model.availability)")
@@ -160,6 +164,15 @@ struct NihoMic {
             let pipeline = Pipeline(store: store, asr: asr)
             try await resume(store, pipeline)
             try await pipeline.process(source)
+        case "audio-check":
+            let flags = try options(tail, allowed: ["--audio"])
+            guard let path = flags["--audio"] else { throw MicError.invalidArguments }
+            let source = URL(fileURLWithPath: (path as NSString).expandingTildeInPath)
+            let audio: AVAudioFile
+            do { audio = try AVAudioFile(forReading: source) } catch { throw MicError.invalidAudio }
+            let duration = Double(audio.length) / audio.processingFormat.sampleRate
+            guard duration.isFinite, duration >= 2, duration <= 300 else { throw MicError.invalidAudio }
+            print(try AudioQuality.assess(audio).description)
         case "transcribe", "review-audio":
             let flags = try options(tail, allowed: command == "review-audio" ? ["--audio", "--asr", "--prompt-file", "--selection-prompt-file"] : ["--audio", "--asr"])
             guard let path = flags["--audio"] else { throw MicError.invalidArguments }
@@ -172,8 +185,10 @@ struct NihoMic {
             guard duration.isFinite, duration >= 2, duration <= 300 else { throw MicError.invalidAudio }
             if command == "review-audio" {
                 try await LocalModels.requireReady(asr: asr, store: store)
-                guard try AudioQuality.hasAudibleSignal(audio) else {
-                    let record = LocalRecord(segmentID: try PrivateStore.hash(source), audioEndedAt: Date(), decision: "skip", reason: "no_speech")
+                let quality = try AudioQuality.assess(audio)
+                print(quality.description)
+                guard quality.shouldTranscribe else {
+                    let record = LocalRecord(segmentID: try PrivateStore.hash(source), audioEndedAt: Date(), decision: "skip", reason: quality.reason)
                     printReview(transcript: nil, record: record, trace: nil, preview: true)
                     break
                 }
@@ -192,7 +207,7 @@ struct NihoMic {
             if let value = flags["--segment-seconds"] {
                 guard let parsed = Double(value), parsed.isFinite, (2...300).contains(parsed) else { throw MicError.invalidArguments }
                 seconds = parsed
-            } else { seconds = 120 }
+            } else { seconds = 180 }
             let store = try PrivateStore()
             try await LocalModels.requireReady(asr: asr, store: store)
             let pipeline = Pipeline(store: store, asr: asr)
@@ -226,7 +241,7 @@ struct NihoMic {
             print("2. 使用判定: \(decision == "use" ? "使用" : "見送り") / \(reasonDescription(reason)) [\(reason)]")
             if let topic = trace?.selectedTopic, !topic.isEmpty { print("   選んだ話題: \(topic)") }
             if let explanation = trace?.selectionExplanation, !explanation.isEmpty { print("   理由: \(explanation)") }
-        } else if ["audio_too_short", "no_speech"].contains(record.reason) {
+        } else if ["audio_too_short", "no_speech", "insufficient_speech", "low_speech_confidence"].contains(record.reason) {
             print("2. 使用判定: 見送り / \(reasonDescription(record.reason)) [\(record.reason)]")
         } else { print("2. 使用判定: （旧版のため記録なし）") }
         let candidate = trace?.candidateText ?? ""
@@ -240,6 +255,8 @@ struct NihoMic {
         switch reason {
         case "ok": return "内容を採用"
         case "no_speech", "audio_too_short", "blank_or_short": return "発話がない、または短すぎる"
+        case "insufficient_speech": return "発話と判定された時間が短い"
+        case "low_speech_confidence": return "発話分類の確信度が低い"
         case "unclear", "no_clear_topic": return "話題を読み取れない"
         case "no_shareable_topic": return "理解できる共有価値のある話題を切り出せない"
         case "selection_model_error": return "Mac 内 AI の使用判定を完了できなかった"

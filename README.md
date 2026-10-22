@@ -4,7 +4,8 @@ NIHO 鎌倉で交わされている話の要点を、連絡先や詳しい住所
 
 ## 現在の範囲（v1）
 
-- 運営者が指定したマイクから録音し、macOS の SpeechTranscriber（既定）、ローカルの Whisper、Antigravity CLI の Gemini を明示選択して文字起こしする。
+- 運営者が指定したマイクから3分ずつ連続録音する。Mac内で発話の量と明瞭さを判定し、雑音や短い発話だけの区切りは文字起こし前に見送る。
+- macOS の SpeechTranscriber（既定）、ローカルの Whisper、Antigravity CLI の Gemini を明示選択して文字起こしする。
 - Mac 内の AI で「その場の様子が伝わるか、後で役に立つか」を判定して話題を選び、日本語 140 文字以内の場の共有または伝聞の短文を Mac に保存する。
 - 音声は 72 時間、生の文字起こしは 168 時間保持した後に削除する。
 - NIHOappへの投稿と自動起動はまだ行わない。Gemini 指定時だけ音声を Google 側へ送る。要約と使用判定は引き続き Mac 内で行う。
@@ -53,7 +54,9 @@ printf '%s  %s\n' \
 .build/release/niho-mic doctor --asr whisper
 ```
 
-Gemini を使う場合は、[Antigravity CLI の公式手順](https://www.antigravity.google/docs/cli/install/)で `agy` を準備・ログインし、`agy models` に `gemini-3.8-flash-low` があることを確認します。`doctor --asr gemini` は CLI の存在と Mac 内 AI を確認し、アカウント・モデルの利用可否は最初の文字起こしで確認します。**`--asr gemini` を選ぶと音声が Google 側へ送られます。**CLI 側の会話履歴・保持はこのアプリの72時間／168時間削除の対象外です。自動フォールバックはありません。
+Gemini CLI 連携は比較実験として実装されています。ただし[Googleの公式FAQ](https://www.antigravity.google/docs/faq/)は、消費者向けプランで `agy` を外部アプリに組み込む方法をサポートしないと明記しています。**消費者向けAntigravityアカウントで、このアプリからの連続運用に使わないでください。**Googleの文字起こしが継続して必要なら、公式のGemini APIなどへ別途移行します。`--asr gemini` を選んだ場合は音声が Google 側へ送られ、CLI 側の会話履歴・保持はこのアプリの72時間／168時間削除の対象外です。自動フォールバックはありません。
+
+利用条件に合う環境で比較する場合は、[Antigravity CLI の公式手順](https://www.antigravity.google/docs/cli/install/)で `agy` を準備・ログインし、`agy models` に `gemini-3.8-flash-low` があることを確認します。`doctor --asr gemini` は CLI の存在と Mac 内 AI を確認し、アカウント・モデルの利用可否は最初の文字起こしで確認します。
 
 CLI には変換した音声の絶対パスを渡し、そのファイルを `read_file` で直接開かせます。音声だけを置いた専用作業ディレクトリで実行し、別ファイルの読取やコマンド実行を要求した結果は採用しません。ヘッドレス実行の権限を広げる設定や `--dangerously-skip-permissions` は不要です。作業音声は終了時に削除し、中断後も次回起動時に削除します。
 
@@ -62,18 +65,25 @@ agy models
 .build/release/niho-mic doctor --asr gemini
 ```
 
-運営者が現地で録音を始めるときは、`inputs` に表示されたマイクの **UID** を指定します。以下の `<マイクUID>` は実際の値に置き換えます。区切りは既定で120秒です。初回は認識精度と短文までの時間を確認してください。5分区切りで試す場合は、二つ目のコマンドを使います。
+運営者が現地で録音を始めるときは、`inputs` に表示されたマイクの **UID** を指定します。以下の `<マイクUID>` は実際の値に置き換えます。区切りは既定で180秒です。録音を止めずに直前の区切りを処理するため、処理中の会話も次の区切りに入ります。約1分以内の処理を目標に現地MacBookで計測し、処理待ちが2区切りに達した場合は録音を安全に停止します。
+
+6時間ほどの運用では `--asr whisper` を第一候補として試します。Mac内で完結し、音声量に応じたAPI料金はかかりません。Appleはモデル準備が簡単で速い一方、実録音では語句の取り違えが目立ちました。Geminiは試した講演で読みやすい文字起こしでしたが、[利用枠と追加クレジット](https://www.antigravity.google/docs/plans)があり、上記の利用条件にも注意が必要です。1台のMac miniでの実測は、2分音源の文字起こしがApple約2秒・Whisper約13秒、3分音源のWhisper＋採用判断＋要約が約32秒でした。MacBookの時間は現地で確認します。
 
 ```bash
-.build/release/niho-mic run --input '<マイクUID>'
-.build/release/niho-mic run --input '<マイクUID>' --segment-seconds 300
 .build/release/niho-mic run --input '<マイクUID>' --asr whisper
-.build/release/niho-mic run --input '<マイクUID>' --asr gemini
+.build/release/niho-mic run --input '<マイクUID>'
+.build/release/niho-mic run --input '<マイクUID>' --segment-seconds 300 --asr whisper
 ```
 
 **Ctrl-C** で停止します。既に同意を得て録音した短い音声があれば、`once --audio '<ファイルの絶対パス>'` でも処理できます。実音声、文字起こし、短文ログはこの公開リポジトリへ追加しないでください。
 
-同じ音声の文字起こしだけを比較するときは、次を使います。`transcribe` は要約やログへの記録をせず、端末へ生の文字起こしを表示します。`once` と `run` は保存済み音声の重複処理を避けるため、同じファイルでエンジンを比較する用途には使えません。
+文字起こし前の音声判定だけを試すには次を使います。Mac標準のSound Analysisで発話らしさを判定し、発話候補が少ない場合や分類の確信度が低い場合に見送ります。音量だけでは雑音と発話を区別できないため、分類結果に秒数と割合のルールを適用します。発話判定は「言葉が正しく聞き取れる」保証ではなく、文字起こし後にも不明瞭な文章を見送ります。
+
+```bash
+.build/release/niho-mic audio-check --audio '<5分以内の音声>'
+```
+
+同じ音声の文字起こしだけを比較するときは、次を使います。`transcribe` は音声判定を通さず、要約やログへの記録もせず、端末へ生の文字起こしを表示します。`once` と `run` は保存済み音声の重複処理を避けるため、同じファイルでエンジンを比較する用途には使えません。
 
 ```bash
 .build/release/niho-mic transcribe --audio '<5分以内の音声>' --asr apple

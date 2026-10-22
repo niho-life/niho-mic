@@ -6,7 +6,7 @@ public enum MicError: String, Error, LocalizedError {
     case inputChanged, recordingFailed, transcriptionFailed, generationFailed
     case whisperUnavailable, whisperModelMissing
     case geminiUnavailable, geminiRunFailed, geminiPermissionDenied, geminiUnexpectedTool
-    case unsafeStorage, storageBusy, invalidAudio, audioTooLong, corruptLog
+    case unsafeStorage, storageBusy, invalidAudio, audioTooLong, audioAnalysisFailed, corruptLog
     public var errorDescription: String? {
         switch self {
         case .invalidArguments: "引数が不正です。niho-mic help を確認してください。"
@@ -30,6 +30,7 @@ public enum MicError: String, Error, LocalizedError {
         case .unsafeStorage: "専用保存先の安全性または権限を確認できません。"
         case .storageBusy: "別の niho-mic が同じ保存先を使用しています。"
         case .invalidAudio: "音声を読み取れないか、短すぎます。"
+        case .audioAnalysisFailed: "Mac 内の発話判定に失敗しました。音声は文字起こししません。"
         case .audioTooLong: "once は最長 300 秒です。音声を分割して再実行してください。"
         case .corruptLog: "既存ログの整合性を確認できないため、重複防止のため処理を停止しました。"
         }

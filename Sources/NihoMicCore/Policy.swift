@@ -30,8 +30,8 @@ public enum MicError: String, Error, LocalizedError {
 }
 
 public enum SafetyPolicy {
-    // Deliberately conservative: an unsafe topic rejects the entire window.
-    static let sensitive = ["政治", "選挙", "政党", "宗教", "信仰", "教会", "神様", "病気", "健康", "病院", "医者", "薬", "診断", "妊娠", "障害", "自殺", "うつ", "家族", "家庭", "妻", "夫", "嫁", "旦那", "息子", "娘", "父", "母", "離婚", "結婚", "恋人", "彼氏", "彼女", "付き合", "人間関係", "不倫", "喧嘩", "いじめ", "未成年", "子供", "子ども", "小学生", "中学生", "高校生", "赤ちゃん", "お金", "金銭", "借金", "年収", "給料", "給与", "貯金", "口座", "クレジット", "万円", "円", "住所", "電話", "メール", "連絡先", "本名", "秘密", "個人情報", "さん", "くん", "ちゃん", "氏", "先生", "私", "僕", "俺", "わたし", "あなた", "勤務先", "勤め", "学校", "住んで", "引っ越", "逮捕", "犯罪", "差別", "性的", "セックス", "自宅", "実家", "出身", "誕生日", "歳", "才", "自己紹介", "名前"]
+    // Output guard. The transcript may contain private material; only the selected summary is screened here.
+    static let sensitive = ["政治", "選挙", "政党", "宗教", "信仰", "教会", "神様", "病気", "健康", "病院", "医者", "薬", "診断", "妊娠", "障害", "自殺", "うつ病", "家族", "家庭", "妻", "夫", "嫁", "旦那", "息子", "娘", "父", "母", "離婚", "結婚", "恋人", "彼氏", "彼女", "人間関係", "不倫", "喧嘩", "いじめ", "未成年", "子供", "子ども", "小学生", "中学生", "高校生", "赤ちゃん", "お金", "金銭", "借金", "年収", "給料", "給与", "貯金", "口座", "クレジット", "万円", "円", "住所", "電話", "メール", "連絡先", "本名", "秘密", "個人情報", "さん", "くん", "ちゃん", "氏", "先生", "私", "僕", "俺", "わたし", "あなた", "勤務先", "勤め", "住んで", "引っ越", "逮捕", "犯罪", "差別", "性的", "セックス", "自宅", "実家", "出身", "誕生日", "歳", "才", "自己紹介", "名前"]
 
     public static func isSensitive(_ text: String) -> Bool {
         let normalized = text.precomposedStringWithCompatibilityMapping.lowercased()
@@ -41,23 +41,43 @@ public enum SafetyPolicy {
                         #"(?:\+?\d[\d ()-]{6,}\d)"#, #"https?://|www\.|@[\w]+"#,
                         #"\d{2,4}[-ー]\d{1,4}|[一二三四五六七八九十]+丁目|\d+番地"#,
                         #"\d+(?:歳|才|円)|(?:妻|夫|父|母)(?:が|は|の|と)|(?:薬)(?:を飲|を処方)"#,
-                        #"(?:私|僕|俺|わたし|彼|彼女|[A-Za-z一-龯ぁ-んァ-ヶ]{1,8}さん)(?:が|は|も|の)?[^。！？\n]{0,24}住んで"#]
+                        #"(?:私|僕|俺|わたし|彼|彼女|[A-Za-z一-龯ぁ-んァ-ヶ]{1,8}さん)(?:が|は)?[^。！？\nがは]{0,24}住んで"#]
         if patterns.contains(where: { normalized.range(of: $0, options: [.regularExpression, .caseInsensitive]) != nil }) { return true }
+        return !personalNames(in: text).isEmpty
+    }
+
+    public static func personalNames(in text: String) -> Set<String> {
+        var names = Set<String>()
+        let pattern = #"([一-龯]{1,4})(さん|くん|ちゃん|氏|先生)"#
+        if let regex = try? NSRegularExpression(pattern: pattern) {
+            let range = NSRange(text.startIndex..<text.endIndex, in: text)
+            for match in regex.matches(in: text, range: range) {
+                guard let nameRange = Range(match.range(at: 1), in: text),
+                      let fullRange = Range(match.range, in: text) else { continue }
+                let name = String(text[nameRange])
+                names.insert(name.count >= 2 ? name : String(text[fullRange]))
+            }
+        }
         let tagger = NLTagger(tagSchemes: [.nameType])
         tagger.string = text
-        var found = false
-        tagger.enumerateTags(in: text.startIndex..<text.endIndex, unit: .word, scheme: .nameType, options: [.joinNames, .omitWhitespace, .omitPunctuation]) { tag, _ in
-            if tag == .personalName { found = true; return false }
+        tagger.enumerateTags(in: text.startIndex..<text.endIndex, unit: .word, scheme: .nameType, options: [.joinNames, .omitWhitespace, .omitPunctuation]) { tag, range in
+            if tag == .personalName {
+                let name = String(text[range])
+                if name.count >= 2 { names.insert(name) }
+            }
             return true
         }
-        return found
+        return names
+    }
+
+    public static func containsSourceName(_ candidate: String, transcript: String) -> Bool {
+        personalNames(in: transcript).contains { candidate.contains($0) }
     }
 
     public static func transcriptRejection(_ text: String) -> String? {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         if trimmed.count < 20 { return "blank_or_short" }
         if trimmed.count > 6000 { return "too_long_for_local_context" }
-        if isSensitive(trimmed) { return "sensitive_topic" }
         if ["聞き取れ", "不明瞭", "判別不能", "ご視聴ありがとうございました", "字幕"].contains(where: trimmed.contains) { return "unclear" }
         return nil
     }
@@ -71,7 +91,7 @@ public enum SafetyPolicy {
               text.range(of: #"[ぁ-んァ-ヶ一-龯]"#, options: .regularExpression) != nil,
               text.hasSuffix("なんだって。") || text.hasSuffix("という話をしていたよ。"),
               !isSensitive(text),
-              !["SKIP", "見送り", "不明", "```", "<", ">", "{", "}", "■", "＊", "***", "[伏"].contains(where: text.contains)
+              !["SKIP", "見送り", "不明", "話という話", "```", "<", ">", "{", "}", "■", "＊", "***", "[伏"].contains(where: text.contains)
         else { return nil }
         return text
     }

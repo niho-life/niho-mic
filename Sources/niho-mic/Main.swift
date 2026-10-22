@@ -20,7 +20,7 @@ struct NihoMic {
     niho-mic help
 
     録音は運営者が目的を説明し、参加者の同意を得てから手動で開始してください。
-    run は連続録音を最大300秒で区切ります。Ctrl-C で録音を止め、最後の区切りを処理します。
+    run は既定120秒（指定可能範囲2〜300秒）で区切ります。Ctrl-C で録音を止め、最後の区切りを処理します。
     指定機器の切断、既定入力や入力設定の変更を検出すると停止します。
     once は2〜300秒の録音が対象です。元ファイルは変更しません。
     保存先: ~/Library/Application Support/life.niho.mic (0700 / ファイル0600)
@@ -113,7 +113,7 @@ struct NihoMic {
             if let value = flags["--segment-seconds"] {
                 guard let parsed = Double(value), parsed.isFinite, (2...300).contains(parsed) else { throw MicError.invalidArguments }
                 seconds = parsed
-            } else { seconds = 300 }
+            } else { seconds = 120 }
             let store = try PrivateStore()
             try await LocalModels.requireReady()
             let pipeline = Pipeline(store: store)

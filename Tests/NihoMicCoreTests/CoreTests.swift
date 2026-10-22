@@ -33,12 +33,14 @@ final class CoreTests: XCTestCase {
         XCTAssertNil(SafetyPolicy.normalizeSummary("病気の話なんだって。"))
         XCTAssertNil(SafetyPolicy.normalizeSummary("[伏せ字]なんだって。"))
         XCTAssertNil(SafetyPolicy.normalizeSummary("A garden story."))
+        XCTAssertNil(SafetyPolicy.normalizeSummary("説明の流れが話題だったよ。という話をしていたよ。"))
     }
 
     func testDuplicatesAndNewTopics() {
         let recent = ["日陰でも育てやすいシダの水やりの工夫という話をしていたよ。"]
         XCTAssertTrue(SafetyPolicy.isDuplicate(recent[0], recent: recent))
         XCTAssertTrue(SafetyPolicy.isDuplicate("日陰でも育てやすいシダの水やりの工夫なんだって。", recent: recent))
+        XCTAssertTrue(SafetyPolicy.isDuplicate("水やりの注意を説明した上で、それでも育てたいならシダを選ぶという流れが話題だったよ。という話をしていたよ。", recent: ["鉢の違いを説明して水やりの注意を伝えた上で、それでも育てたいならシダを選ぶという話なんだって。"]))
         XCTAssertFalse(SafetyPolicy.isDuplicate("木材を乾燥させると反りを防げるという話をしていたよ。", recent: recent))
         XCTAssertFalse(SafetyPolicy.isDuplicate("日陰でも育てやすいシダの水やりの工夫に加え、鉢底へ軽石を入れると根腐れを防げるという話をしていたよ。", recent: recent))
         XCTAssertTrue(SafetyPolicy.isDuplicate("　", recent: []))

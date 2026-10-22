@@ -66,6 +66,7 @@ public enum SafetyPolicy {
         let text = raw.trimmingCharacters(in: .whitespacesAndNewlines).precomposedStringWithCanonicalMapping
         guard !text.isEmpty, text.count <= 140,
               !text.contains("\n"), !text.contains("\r"),
+              text.filter({ $0 == "。" }).count == 1,
               !text.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) || $0.properties.generalCategory == .format }),
               text.range(of: #"[ぁ-んァ-ヶ一-龯]"#, options: .regularExpression) != nil,
               text.hasSuffix("なんだって。") || text.hasSuffix("という話をしていたよ。"),
@@ -97,7 +98,7 @@ public enum SafetyPolicy {
             let shared = Double(lhs.intersection(rhs).count)
             let lengthRatio = Double(min(lhs.count, rhs.count)) / Double(max(1, max(lhs.count, rhs.count)))
             return shared / Double(max(1, lhs.union(rhs).count)) >= 0.75 ||
-                (lengthRatio >= 0.85 && shared / Double(max(1, min(lhs.count, rhs.count))) >= 0.85)
+                (lengthRatio >= 0.80 && shared / Double(max(1, min(lhs.count, rhs.count))) >= 0.70)
         }
     }
 }

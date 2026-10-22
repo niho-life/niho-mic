@@ -40,6 +40,7 @@ public final class PrivateStore {
     public let root: URL
     public let audioDirectory: URL
     public let transcriptDirectory: URL
+    public let geminiScratchDirectory: URL
     private let logs: URL
     private var lockFD: Int32 = -1
     private let manager = FileManager.default
@@ -51,10 +52,11 @@ public final class PrivateStore {
         self.root = base
         audioDirectory = base.appendingPathComponent("audio", isDirectory: true)
         transcriptDirectory = base.appendingPathComponent("transcripts", isDirectory: true)
+        geminiScratchDirectory = base.appendingPathComponent("gemini-scratch", isDirectory: true)
         logs = base.appendingPathComponent("logs", isDirectory: true)
         encoder.dateEncodingStrategy = .iso8601
         decoder.dateDecodingStrategy = .iso8601
-        for directory in [base, audioDirectory, transcriptDirectory, logs] {
+        for directory in [base, audioDirectory, transcriptDirectory, geminiScratchDirectory, logs] {
             if manager.fileExists(atPath: directory.path) {
                 let attributes = try manager.attributesOfItem(atPath: directory.path)
                 guard attributes[.type] as? FileAttributeType == .typeDirectory,
@@ -68,6 +70,11 @@ public final class PrivateStore {
         lockFD = open(lockURL.path, O_CREAT | O_RDWR | O_NOFOLLOW, 0o600)
         guard lockFD >= 0 else { throw MicError.unsafeStorage }
         guard flock(lockFD, LOCK_EX | LOCK_NB) == 0 else { close(lockFD); lockFD = -1; throw MicError.storageBusy }
+        // No earlier process can still own this store. Remove interrupted CLI workspaces.
+        for url in try manager.contentsOfDirectory(at: geminiScratchDirectory, includingPropertiesForKeys: nil) {
+            try secure(url)
+            try manager.removeItem(at: url)
+        }
         try expire()
     }
 
@@ -82,7 +89,7 @@ public final class PrivateStore {
     }
 
     public func expire(now: Date = Date()) throws {
-        for (directory, lifetime) in [(audioDirectory, Retention.audio), (transcriptDirectory, Retention.transcript)] {
+        for (directory, lifetime) in [(audioDirectory, Retention.audio), (geminiScratchDirectory, Retention.audio), (transcriptDirectory, Retention.transcript)] {
             for url in try manager.contentsOfDirectory(at: directory, includingPropertiesForKeys: [.creationDateKey, .contentModificationDateKey]) {
                 try secure(url)
                 let attributes = try manager.attributesOfItem(atPath: url.path)

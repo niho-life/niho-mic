@@ -3,6 +3,32 @@ import AVFoundation
 @testable import NihoMicCore
 
 final class CoreTests: XCTestCase {
+    func testGeminiAcceptsOnlyDirectAudioRead() throws {
+        let path = "/private/tmp/synthetic.wav"
+        let stream = """
+        {"event":"step_update","step_update":{"state":"DONE","step_type":"tool","tool_name":"read_file","tool_info":{"parameters":{"Path":"/private/tmp/synthetic.wav"}}}}
+        {"event":"result","result":{"status":"SUCCESS","response":"鎌倉では庭のシダを育てる話です。"}}
+        """
+        XCTAssertEqual(try GeminiASR.parseStream(Data(stream.utf8), expectedAudioPath: path), "鎌倉では庭のシダを育てる話です。")
+        XCTAssertThrowsError(try GeminiASR.parseStream(Data(stream.utf8), expectedAudioPath: "/private/tmp/other.wav")) { error in
+            XCTAssertEqual(error as? MicError, .geminiUnexpectedTool)
+        }
+    }
+
+    func testGeminiRejectsSoftDeniedCommandEvenWithExitZero() {
+        let stream = """
+        {"event":"step_update","step_update":{"state":"ERROR","step_type":"tool","tool_name":"run_command","tool_info":{"parameters":{"CommandLine":"ls -la"}}}}
+        {"event":"result","result":{"status":"SUCCESS","response":"","denied_actions":[{"action":"command"}]}}
+        """
+        XCTAssertThrowsError(try GeminiASR.parseStream(Data(stream.utf8), expectedAudioPath: "/private/tmp/synthetic.wav")) { error in
+            XCTAssertEqual(error as? MicError, .geminiPermissionDenied)
+        }
+    }
+
+    func testSelectionExplanationDropsMalformedStructuredTail() {
+        XCTAssertEqual(LocalModels.cleanGeneratedField("庭の落ち葉が乾燥を防ぐ。\"}```json{", limit: 120), "庭の落ち葉が乾燥を防ぐ。")
+    }
+
     func testSensitiveWholeWindow() {
         for text in ["来週、Aさんが病院へ行く", "政治の話と日陰の植物の育て方", "連絡は sample@example.com です", "電話 090-1234-5678", "神奈川県の三丁目という住所", "家族で旅行に行った話", "未成年者についての話", "今いる人数は三人です", "hello https://example.com", "お金の相談です", "田中さんが鎌倉に住んでいる話"] {
             XCTAssertTrue(SafetyPolicy.isSensitive(text), "synthetic sensitive fixture was accepted")
@@ -29,6 +55,7 @@ final class CoreTests: XCTestCase {
         XCTAssertEqual(SafetyPolicy.transcriptRejection("この部分は聞き取れず、不明瞭で意味を取れない音声です。"), "unclear")
         XCTAssertEqual(SafetyPolicy.transcriptRejection(String(repeating: "庭", count: 6001)), "too_long_for_local_context")
         XCTAssertNil(SafetyPolicy.transcriptRejection("庭のシダの育て方を話しました。途中で松本さんの家族についても短く話しました。"))
+        XCTAssertEqual(SafetyPolicy.transcriptRejection("地域の課題について話している。本田県の補正などの補正などの補正などの補正などの補正などの会議です。"), "unclear")
     }
 
     func testSummaryNormalizationDoesNotTruncate() {
@@ -36,7 +63,7 @@ final class CoreTests: XCTestCase {
         XCTAssertEqual(SafetyPolicy.normalizeSummary(" \n" + text + "\n "), text)
         XCTAssertEqual(SafetyPolicy.normalizeSummary(text + "」}<ctrl46>"), text)
         XCTAssertEqual(SafetyPolicy.normalizeSummary(text + "」}<ctrl46>}"), text)
-        XCTAssertEqual(SafetyPolicy.normalizeSummary(text + "」} 文の外に続く壊れた出力。"), text)
+        XCTAssertNil(SafetyPolicy.normalizeSummary(text + "」} 文の外に続く壊れた出力。"))
         XCTAssertNil(SafetyPolicy.normalizeSummary(text + "」}" + String(repeating: "<ctrl46>", count: 150)))
         XCTAssertEqual(SafetyPolicy.normalizeSummary("庭ではシダが育つんだって。"), "庭ではシダが育つんだって。")
         XCTAssertEqual(SafetyPolicy.normalizeSummary("日陰の庭でシダが育つという話だ。"), "日陰の庭でシダが育つという話だ。")
@@ -116,6 +143,7 @@ final class CoreTests: XCTestCase {
     func testExpiryDeletesOnlyExpiredPrivateArtifacts() throws {
         try withStore { store, _ in
             let audio = store.audioDirectory.appendingPathComponent("synthetic.caf")
+            let geminiAudio = store.geminiScratchDirectory.appendingPathComponent("synthetic.wav")
             let transcript = store.transcriptDirectory.appendingPathComponent("synthetic.txt")
             let id = String(repeating: "b", count: 64)
             try store.writeReviewTrace(ReviewTrace(candidateTopic: "庭", candidateText: "庭にシダが育つなんだって。", gateReason: "ok"), id: id)
@@ -123,14 +151,29 @@ final class CoreTests: XCTestCase {
             let trace = store.transcriptDirectory.appendingPathComponent(id + ".review.json")
             XCTAssertEqual((try FileManager.default.attributesOfItem(atPath: trace.path)[.posixPermissions] as? NSNumber)?.intValue, 0o600)
             try Data("synthetic".utf8).write(to: audio)
+            try Data("synthetic".utf8).write(to: geminiAudio)
             try Data("synthetic".utf8).write(to: transcript)
             try store.expire(now: Date().addingTimeInterval(Retention.audio + 2))
             XCTAssertFalse(FileManager.default.fileExists(atPath: audio.path))
+            XCTAssertFalse(FileManager.default.fileExists(atPath: geminiAudio.path))
             XCTAssertTrue(FileManager.default.fileExists(atPath: transcript.path))
             try store.expire(now: Date().addingTimeInterval(Retention.transcript + 2))
             XCTAssertFalse(FileManager.default.fileExists(atPath: transcript.path))
             XCTAssertFalse(FileManager.default.fileExists(atPath: trace.path))
         }
+    }
+
+    func testRestartRemovesInterruptedGeminiScratchAudio() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("niho-mic-synthetic-test-" + UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let scratch: URL
+        do {
+            let store = try PrivateStore(root: root)
+            scratch = store.geminiScratchDirectory.appendingPathComponent("synthetic.wav")
+            try Data("synthetic audio".utf8).write(to: scratch)
+        }
+        _ = try PrivateStore(root: root)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: scratch.path))
     }
 
     func testStoreRejectsSymlinks() throws {

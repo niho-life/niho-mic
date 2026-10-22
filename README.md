@@ -4,10 +4,10 @@ NIHO 鎌倉で交わされている話の要点を、連絡先や詳しい住所
 
 ## 現在の範囲（v1）
 
-- 運営者が指定したマイクから録音し、macOS の SpeechTranscriber（既定）またはローカルの Whisper を選んで Mac 内文字起こしする。
+- 運営者が指定したマイクから録音し、macOS の SpeechTranscriber（既定）、ローカルの Whisper、Antigravity CLI の Gemini を明示選択して文字起こしする。
 - Mac 内の AI で「その場の様子が伝わるか、後で役に立つか」を判定して話題を選び、日本語 140 文字以内の場の共有または伝聞の短文を Mac に保存する。
 - 音声は 72 時間、生の文字起こしは 168 時間保持した後に削除する。
-- NIHOappへの投稿、クラウド文字起こし、自動起動はまだ行わない。
+- NIHOappへの投稿と自動起動はまだ行わない。Gemini 指定時だけ音声を Google 側へ送る。要約と使用判定は引き続き Mac 内で行う。
 
 録音と要約に使う Mac は **Apple Silicon・macOS 26 以上**が必要です。音声認識の日本語モデルと Mac 内 AI の利用可否は、その Mac で確認します。現地では、参加者への録音目的の説明を済ませたうえで開始し、必要なときはすぐ停止してください。
 
@@ -53,12 +53,22 @@ printf '%s  %s\n' \
 .build/release/niho-mic doctor --asr whisper
 ```
 
+Gemini を使う場合は、[Antigravity CLI の公式手順](https://www.antigravity.google/docs/cli/install/)で `agy` を準備・ログインし、`agy models` に `gemini-3.8-flash-low` があることを確認します。`doctor --asr gemini` は CLI の存在と Mac 内 AI を確認し、アカウント・モデルの利用可否は最初の文字起こしで確認します。**`--asr gemini` を選ぶと音声が Google 側へ送られます。**CLI 側の会話履歴・保持はこのアプリの72時間／168時間削除の対象外です。自動フォールバックはありません。
+
+CLI には変換した音声の絶対パスを渡し、そのファイルを `read_file` で直接開かせます。音声だけを置いた専用作業ディレクトリで実行し、別ファイルの読取やコマンド実行を要求した結果は採用しません。ヘッドレス実行の権限を広げる設定や `--dangerously-skip-permissions` は不要です。作業音声は終了時に削除し、中断後も次回起動時に削除します。
+
+```bash
+agy models
+.build/release/niho-mic doctor --asr gemini
+```
+
 運営者が現地で録音を始めるときは、`inputs` に表示されたマイクの **UID** を指定します。以下の `<マイクUID>` は実際の値に置き換えます。区切りは既定で120秒です。初回は認識精度と短文までの時間を確認してください。5分区切りで試す場合は、二つ目のコマンドを使います。
 
 ```bash
 .build/release/niho-mic run --input '<マイクUID>'
 .build/release/niho-mic run --input '<マイクUID>' --segment-seconds 300
 .build/release/niho-mic run --input '<マイクUID>' --asr whisper
+.build/release/niho-mic run --input '<マイクUID>' --asr gemini
 ```
 
 **Ctrl-C** で停止します。既に同意を得て録音した短い音声があれば、`once --audio '<ファイルの絶対パス>'` でも処理できます。実音声、文字起こし、短文ログはこの公開リポジトリへ追加しないでください。
@@ -68,6 +78,15 @@ printf '%s  %s\n' \
 ```bash
 .build/release/niho-mic transcribe --audio '<5分以内の音声>' --asr apple
 .build/release/niho-mic transcribe --audio '<5分以内の音声>' --asr whisper
+.build/release/niho-mic transcribe --audio '<5分以内の音声>' --asr gemini
+```
+
+同じ録音で文字起こしから投稿案まで比較するときは `review-audio` を使います。結果は端末だけに表示し、録音ログや処理済み判定は変更しません。文字起こし、採用判断と理由、要約候補、最終チェックが順に出ます。生の文字起こしを画面に出すため、画面共有中は注意してください。
+
+```bash
+.build/release/niho-mic review-audio --audio '<5分以内の音声>' --asr apple
+.build/release/niho-mic review-audio --audio '<5分以内の音声>' --asr whisper
+.build/release/niho-mic review-audio --audio '<5分以内の音声>' --asr gemini
 ```
 
 採用した短文は `~/Library/Application Support/life.niho.mic/logs/YYYY-MM-DD.jsonl` に記録されます。自分のMac上で見る場合の例:

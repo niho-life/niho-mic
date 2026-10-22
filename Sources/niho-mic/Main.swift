@@ -8,14 +8,15 @@ import NihoMicCore
 @main
 struct NihoMic {
     static let help = """
-    にほちゃんマイク v1 — macOS 26+ / Apple Silicon / Mac 内処理のみ
+    にほちゃんマイク v1 — macOS 26+ / Apple Silicon / 既定は Mac 内処理
 
     niho-mic inputs
-    niho-mic doctor [--input <機器UID>] [--asr apple|whisper]
+    niho-mic doctor [--input <機器UID>] [--asr apple|whisper|gemini]
     niho-mic install-speech-model
-    niho-mic run --input <機器UID> [--segment-seconds <2〜300>] [--asr apple|whisper]
-    niho-mic once --audio <音声ファイル> [--asr apple|whisper]
-    niho-mic transcribe --audio <音声ファイル> [--asr apple|whisper]
+    niho-mic run --input <機器UID> [--segment-seconds <2〜300>] [--asr apple|whisper|gemini]
+    niho-mic once --audio <音声ファイル> [--asr apple|whisper|gemini]
+    niho-mic transcribe --audio <音声ファイル> [--asr apple|whisper|gemini]
+    niho-mic review-audio --audio <音声ファイル> [--asr apple|whisper|gemini] [--selection-prompt-file <ファイル>] [--prompt-file <ファイル>]
     niho-mic inspect [--latest <1〜50>]
     niho-mic selection-prompt
     niho-mic prompt
@@ -26,10 +27,11 @@ struct NihoMic {
 
     録音は運営者が目的を説明し、参加者の同意を得てから手動で開始してください。
     run は既定120秒（指定可能範囲2〜300秒）で区切ります。Ctrl-C で録音を止め、最後の区切りを処理します。
-    文字起こしは既定 apple、--asr whisper で Mac 内の無料 Whisper に切り替えます。モデルと whisper-cli は別途準備してください。
+    文字起こしは既定 apple。--asr whisper は無料の Mac 内処理、--asr gemini は音声を Google へ送る明示選択です。自動切替はしません。
     指定機器の切断、既定入力や入力設定の変更を検出すると停止します。
-    once と transcribe は2〜300秒の録音が対象です。元ファイルは変更しません。
+    once、transcribe、review-audio は2〜300秒の録音が対象です。元ファイルは変更しません。
     transcribe は要約・保存せず、生の文字起こしを端末に表示します。画面共有中は注意してください。
+    review-audio は同じ音声で文字起こし・採用判断・投稿案を試し、端末に表示します。記録は変更しません。
     保存先: ~/Library/Application Support/life.niho.mic (0700 / ファイル0600)
     音声72時間、文字起こし168時間。起動時と稼働中に期限切れを削除します。
     停止中は削除されないため、再起動時または prune で削除してください。
@@ -86,6 +88,8 @@ struct NihoMic {
             catch { print("日本語音声モデル: unavailable") }
             do { try WhisperASR.requireReady(store: store); print("Whisper: ready") }
             catch { print("Whisper: unavailable (README の準備手順を確認)") }
+            do { try GeminiASR.requireReady(); print("Gemini CLI: installed (ログインとモデルの利用可否は実行時に確認)") }
+            catch { print("Gemini CLI: unavailable (README の準備手順を確認)") }
             print("選択した文字起こし: \(asr.rawValue)")
             let model = SystemLanguageModel.default
             print("Mac 内 AI: \(model.availability)")
@@ -156,8 +160,8 @@ struct NihoMic {
             let pipeline = Pipeline(store: store, asr: asr)
             try await resume(store, pipeline)
             try await pipeline.process(source)
-        case "transcribe":
-            let flags = try options(tail, allowed: ["--audio", "--asr"])
+        case "transcribe", "review-audio":
+            let flags = try options(tail, allowed: command == "review-audio" ? ["--audio", "--asr", "--prompt-file", "--selection-prompt-file"] : ["--audio", "--asr"])
             guard let path = flags["--audio"] else { throw MicError.invalidArguments }
             let asr = try selectedASR(flags)
             let store = try PrivateStore()
@@ -166,15 +170,20 @@ struct NihoMic {
             do { audio = try AVAudioFile(forReading: source) } catch { throw MicError.invalidAudio }
             let duration = Double(audio.length) / audio.processingFormat.sampleRate
             guard duration.isFinite, duration >= 2, duration <= 300 else { throw MicError.invalidAudio }
-            let transcript: String
-            switch asr {
-            case .apple:
-                guard try await LocalModels.speechStatus() == .installed else { throw MicError.japaneseModelMissing }
-                transcript = try await LocalModels.transcribe(source)
-            case .whisper:
-                transcript = try await WhisperASR.transcribe(source, store: store)
+            if command == "review-audio" {
+                try await LocalModels.requireReady(asr: asr, store: store)
+                guard try AudioQuality.hasAudibleSignal(audio) else {
+                    let record = LocalRecord(segmentID: try PrivateStore.hash(source), audioEndedAt: Date(), decision: "skip", reason: "no_speech")
+                    printReview(transcript: nil, record: record, trace: nil, preview: true)
+                    break
+                }
             }
-            print(transcript)
+            let transcript = try await transcribe(source, asr: asr, store: store)
+            if command == "transcribe" { print(transcript); break }
+            let outcome = try await LocalModels.summarize(transcript, recent: [], id: PrivateStore.hash(source), endedAt: Date(),
+                                                          summaryInstructions: readInstructions(flags["--prompt-file"]),
+                                                          selectionInstructions: readInstructions(flags["--selection-prompt-file"]))
+            printReview(transcript: transcript, record: outcome.record, trace: outcome.trace, preview: true)
         case "run":
             let flags = try options(tail, allowed: ["--input", "--segment-seconds", "--asr"])
             guard let uid = flags["--input"] else { throw MicError.invalidArguments }
@@ -190,6 +199,16 @@ struct NihoMic {
             try await resume(store, pipeline)
             try await run(uid: uid, seconds: seconds, store: store, pipeline: pipeline)
         default: throw MicError.invalidArguments
+        }
+    }
+
+    static func transcribe(_ source: URL, asr: ASREngine, store: PrivateStore) async throws -> String {
+        switch asr {
+        case .apple:
+            guard try await LocalModels.speechStatus() == .installed else { throw MicError.japaneseModelMissing }
+            return try await LocalModels.transcribe(source)
+        case .whisper: return try await WhisperASR.transcribe(source, store: store)
+        case .gemini: return try await GeminiASR.transcribe(source, store: store)
         }
     }
 

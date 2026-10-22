@@ -3,6 +3,7 @@ import Foundation
 public enum ASREngine: String, Sendable {
     case apple
     case whisper
+    case gemini
 }
 
 public enum WhisperASR {

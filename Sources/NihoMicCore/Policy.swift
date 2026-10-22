@@ -5,6 +5,7 @@ public enum MicError: String, Error, LocalizedError {
     case intelligenceUnavailable, japaneseUnsupported, microphoneDenied, inputUnavailable
     case inputChanged, recordingFailed, transcriptionFailed, generationFailed
     case whisperUnavailable, whisperModelMissing
+    case geminiUnavailable, geminiRunFailed, geminiPermissionDenied, geminiUnexpectedTool
     case unsafeStorage, storageBusy, invalidAudio, audioTooLong, corruptLog
     public var errorDescription: String? {
         switch self {
@@ -18,8 +19,12 @@ public enum MicError: String, Error, LocalizedError {
         case .inputUnavailable: "指定された入力機器が見つからないか、使用できません。inputs を再確認してください。"
         case .inputChanged: "入力機器の切断または入力設定の変更を検出したため、録音を停止しました。"
         case .recordingFailed: "音声の保存に失敗したため、録音を停止しました。"
-        case .transcriptionFailed: "Mac 内の文字起こしに失敗しました。音声内容は診断ログへ出力しません。"
+        case .transcriptionFailed: "文字起こしに失敗しました。音声内容は診断ログへ出力しません。"
         case .whisperUnavailable: "whisper-cli が見つかりません。Homebrew で whisper-cpp をインストールしてください。"
+        case .geminiUnavailable: "Antigravity CLI の agy が見つかりません。README の準備手順を確認してください。"
+        case .geminiRunFailed: "Gemini CLI の実行に失敗しました。agy models でログインとモデル利用可否を確認してください。"
+        case .geminiPermissionDenied: "Gemini CLI が追加の操作権限を要求し、ヘッドレス実行で拒否されました。音声は採用しません。"
+        case .geminiUnexpectedTool: "Gemini CLI が指定音声以外の操作を要求しました。音声は採用しません。"
         case .whisperModelMissing: "Whisper の日本語対応モデルが未準備です。README のモデル取得手順を実行してください。"
         case .generationFailed: "Mac 内の要約処理に失敗しました。内容は診断ログへ出力しません。"
         case .unsafeStorage: "専用保存先の安全性または権限を確認できません。"
@@ -53,6 +58,8 @@ public enum SafetyPolicy {
         if trimmed.count < 20 { return "blank_or_short" }
         if trimmed.count > 6000 { return "too_long_for_local_context" }
         if ["聞き取れ", "不明瞭", "判別不能", "ご視聴ありがとうございました", "字幕"].contains(where: trimmed.contains) { return "unclear" }
+        let compact = trimmed.replacingOccurrences(of: #"\s+"#, with: "", options: .regularExpression)
+        if compact.range(of: #"(.{4,24})\1{3,}"#, options: .regularExpression) != nil { return "unclear" }
         return nil
     }
 
@@ -62,6 +69,8 @@ public enum SafetyPolicy {
         var text = raw.trimmingCharacters(in: .whitespacesAndNewlines).precomposedStringWithCanonicalMapping
         // A malformed structured response can put extra generation after an already closed text field.
         if let terminator = text.range(of: "。」}") {
+            let tail = String(text[terminator.upperBound...])
+            guard tail.range(of: #"^(?:[」』}\]>\s]|<ctrl[0-9]+>)*$"#, options: .regularExpression) != nil else { return nil }
             text = String(text[..<terminator.lowerBound]) + "。"
         }
         // FoundationModels sometimes appends an empty structured-output terminator after the final punctuation.

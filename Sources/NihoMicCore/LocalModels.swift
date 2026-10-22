@@ -2,6 +2,7 @@ import Foundation
 import FoundationModels
 import Speech
 import AVFoundation
+import SoundAnalysis
 
 @Generable
 struct TopicSelection {
@@ -52,6 +53,7 @@ public enum LocalModels {
     }
 
     public static func requireReady(asr: ASREngine, store: PrivateStore) async throws {
+        try AudioQuality.requireReady()
         switch asr {
         case .apple: guard try await speechStatus() == .installed else { throw MicError.japaneseModelMissing }
         case .whisper: try WhisperASR.requireReady(store: store)
@@ -192,6 +194,8 @@ public actor Pipeline {
     public func expire() throws { try store.expire() }
 
     public func process(_ source: URL, endedAt: Date = Date(), alreadyArchived: Bool = false) async throws {
+        let startedAt = Date()
+        defer { print("区切り処理時間: \(Int(Date().timeIntervalSince(startedAt)))秒") }
         try store.expire()
         let id = try PrivateStore.hash(source)
         let records = try store.records()
@@ -212,9 +216,11 @@ public actor Pipeline {
             print("見送り: 空録音または短すぎる区切りです。")
             return
         }
-        guard try AudioQuality.hasAudibleSignal(audio) else {
-            try store.append(LocalRecord(segmentID: id, audioEndedAt: endedAt, decision: "skip", reason: "no_speech"))
-            print("見送り: 空録音または無音です。")
+        let quality = try AudioQuality.assess(audio)
+        print(quality.description)
+        guard quality.shouldTranscribe else {
+            try store.append(LocalRecord(segmentID: id, audioEndedAt: endedAt, decision: "skip", reason: quality.reason))
+            print("見送り: 文字起こし前の音声診断で \(quality.reason) と判定しました。")
             return
         }
         let text: String
@@ -234,7 +240,12 @@ public actor Pipeline {
 }
 
 public enum AudioQuality {
-    /// Energy gating only. The language model additionally rejects music and environmental noise.
+    public static func requireReady() throws {
+        guard let request = try? SNClassifySoundRequest(classifierIdentifier: .version1),
+              request.knownClassifications.contains("speech") else { throw MicError.audioAnalysisFailed }
+    }
+
+    /// Cheap energy check before the local sound classifier. Energy alone also admits noise.
     public static func hasAudibleSignal(_ file: AVAudioFile) throws -> Bool {
         guard let buffer = AVAudioPCMBuffer(pcmFormat: file.processingFormat, frameCapacity: 4096) else { throw MicError.invalidAudio }
         file.framePosition = 0
@@ -242,11 +253,90 @@ public enum AudioQuality {
         while file.framePosition < file.length {
             try file.read(into: buffer)
             guard buffer.frameLength > 0, let channels = buffer.floatChannelData else { break }
-            var energy: Double = 0
-            for index in 0..<Int(buffer.frameLength) { energy += Double(channels[0][index] * channels[0][index]) }
-            if sqrt(energy / Double(buffer.frameLength)) > 0.001 { audibleFrames += Int64(buffer.frameLength) }
+            var loudestRMS = 0.0
+            for channel in 0..<Int(file.processingFormat.channelCount) {
+                var energy = 0.0
+                for index in 0..<Int(buffer.frameLength) {
+                    let sample = Double(channels[channel][index])
+                    energy += sample * sample
+                }
+                loudestRMS = max(loudestRMS, sqrt(energy / Double(buffer.frameLength)))
+            }
+            if loudestRMS > 0.001 { audibleFrames += Int64(buffer.frameLength) }
         }
         file.framePosition = 0
         return Double(audibleFrames) / file.processingFormat.sampleRate >= 0.4
     }
+
+    public static func assess(_ file: AVAudioFile) throws -> AudioGateResult {
+        let duration = Double(file.length) / file.processingFormat.sampleRate
+        guard duration.isFinite, duration >= 2 else { throw MicError.invalidAudio }
+        guard try hasAudibleSignal(file) else { return AudioGateResult(duration: duration, reason: "no_speech") }
+        let observer = SpeechObserver()
+        do {
+            let request = try SNClassifySoundRequest(classifierIdentifier: .version1)
+            guard request.knownClassifications.contains("speech") else { throw MicError.audioAnalysisFailed }
+            // Non-overlapping windows make summed classified seconds comparable to file duration.
+            request.overlapFactor = 0
+            let analyzer = try SNAudioFileAnalyzer(url: file.url)
+            try analyzer.add(request, withObserver: observer)
+            analyzer.analyze()
+        } catch { throw MicError.audioAnalysisFailed }
+        guard observer.completed, observer.error == nil else { throw MicError.audioAnalysisFailed }
+        // The classifier can return no windows for a very short file.
+        guard observer.windows > 0 else { return AudioGateResult(duration: duration, reason: "insufficient_speech") }
+        return AudioGateResult(duration: duration, candidateSpeech: observer.candidateSpeech,
+                               speech: observer.speech, confidentSpeech: observer.confidentSpeech)
+    }
+}
+
+/// A local sound classifier supplies speech probabilities; fixed thresholds make the skip decision.
+/// This estimates whether speech is present, not whether every word is intelligible.
+public struct AudioGateResult: Sendable {
+    public let duration: Double
+    public let candidateSpeech: Double
+    public let speech: Double
+    public let confidentSpeech: Double
+    public let reason: String
+    public var shouldTranscribe: Bool { reason == "ok" }
+    public var description: String {
+        "音声診断: 発話候補 \(String(format: "%.1f", candidateSpeech))秒、発話と強く判定 \(String(format: "%.1f", confidentSpeech))秒 / \(String(format: "%.1f", duration))秒 [\(reason)]"
+    }
+
+    public init(duration: Double, candidateSpeech: Double = 0, speech: Double = 0,
+                confidentSpeech: Double = 0, reason override: String? = nil) {
+        self.duration = duration
+        self.candidateSpeech = candidateSpeech
+        self.speech = speech
+        self.confidentSpeech = confidentSpeech
+        if let override { self.reason = override; return }
+        let minimum = min(8.0, max(3.0, duration * 0.05))
+        if candidateSpeech < minimum { reason = "insufficient_speech" }
+        else if speech < minimum * 0.65 || confidentSpeech < 2.0 ||
+                    confidentSpeech / max(candidateSpeech, 1) < 0.20 { reason = "low_speech_confidence" }
+        else { reason = "ok" }
+    }
+}
+
+private final class SpeechObserver: NSObject, SNResultsObserving {
+    var windows = 0
+    var candidateSpeech = 0.0
+    var speech = 0.0
+    var confidentSpeech = 0.0
+    var completed = false
+    var error: Error?
+
+    func request(_ request: SNRequest, didProduce result: SNResult) {
+        guard let result = result as? SNClassificationResult else { return }
+        let seconds = CMTimeGetSeconds(result.timeRange.duration)
+        guard seconds.isFinite, seconds > 0 else { return }
+        let confidence = result.classification(forIdentifier: "speech")?.confidence ?? 0
+        windows += 1
+        if confidence >= 0.25 { candidateSpeech += seconds }
+        if confidence >= 0.50 { speech += seconds }
+        if confidence >= 0.65 { confidentSpeech += seconds }
+    }
+
+    func requestDidComplete(_ request: SNRequest) { completed = true }
+    func request(_ request: SNRequest, didFailWithError error: Error) { self.error = error }
 }

@@ -219,7 +219,34 @@ final class CoreTests: XCTestCase {
                 for index in 0..<32_000 { buffer.floatChannelData![0][index] = amplitude * sin(Float(index) * 0.1) }
                 do { let output = try AVAudioFile(forWriting: url, settings: format.settings); try output.write(from: buffer) }
                 XCTAssertEqual(try AudioQuality.hasAudibleSignal(AVAudioFile(forReading: url)), amplitude > 0)
+                let assessment = try AudioQuality.assess(AVAudioFile(forReading: url))
+                XCTAssertFalse(assessment.shouldTranscribe, "無音や純音を発話として文字起こししない")
             }
+        }
+    }
+
+    func testAudioGateRulesKeepShortClearSpeechAndRejectNoise() {
+        XCTAssertEqual(AudioGateResult(duration: 180, candidateSpeech: 0).reason, "insufficient_speech")
+        XCTAssertEqual(AudioGateResult(duration: 180, candidateSpeech: 30, speech: 8,
+                                       confidentSpeech: 1).reason, "low_speech_confidence")
+        XCTAssertEqual(AudioGateResult(duration: 180, candidateSpeech: 9, speech: 8,
+                                       confidentSpeech: 6).reason, "ok")
+        XCTAssertEqual(AudioGateResult(duration: 180, candidateSpeech: 120, speech: 95,
+                                       confidentSpeech: 70).reason, "ok")
+    }
+
+    func testEnergyCheckIncludesBothStereoChannels() throws {
+        try withStore { _, root in
+            let format = try XCTUnwrap(AVAudioFormat(standardFormatWithSampleRate: 16_000, channels: 2))
+            let buffer = try XCTUnwrap(AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 32_000))
+            buffer.frameLength = 32_000
+            for index in 0..<32_000 {
+                buffer.floatChannelData![0][index] = 0
+                buffer.floatChannelData![1][index] = 0.1 * sin(Float(index) * 0.1)
+            }
+            let url = root.appendingPathComponent("synthetic-stereo.caf")
+            do { let output = try AVAudioFile(forWriting: url, settings: format.settings); try output.write(from: buffer) }
+            XCTAssertTrue(try AudioQuality.hasAudibleSignal(AVAudioFile(forReading: url)))
         }
     }
 }

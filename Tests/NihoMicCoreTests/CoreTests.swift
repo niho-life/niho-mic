@@ -35,6 +35,11 @@ final class CoreTests: XCTestCase {
     func testSummaryNormalizationDoesNotTruncate() {
         let text = "日陰ではシダがよく育つなんだって。"
         XCTAssertEqual(SafetyPolicy.normalizeSummary(" \n" + text + "\n "), text)
+        XCTAssertEqual(SafetyPolicy.normalizeSummary(text + "」}<ctrl46>"), text)
+        XCTAssertEqual(SafetyPolicy.normalizeSummary(text + "」}<ctrl46>}"), text)
+        XCTAssertEqual(SafetyPolicy.normalizeSummary(text + "」} 文の外に続く壊れた出力。"), text)
+        XCTAssertEqual(SafetyPolicy.normalizeSummary("庭ではシダが育つんだって。"), "庭ではシダが育つんだって。")
+        XCTAssertEqual(SafetyPolicy.normalizeSummary("庭ではシダが育つなんだって。葉を残して冬を越すなんだって。"), "庭ではシダが育つなんだって。葉を残して冬を越すなんだって。")
         XCTAssertNil(SafetyPolicy.normalizeSummary(String(repeating: "庭", count: 135) + "なんだって。"))
         XCTAssertNotNil(SafetyPolicy.normalizeSummary(String(repeating: "庭", count: 134) + "なんだって。"))
         XCTAssertNil(SafetyPolicy.normalizeSummary("断定した歴史的事実です。"))
@@ -57,12 +62,10 @@ final class CoreTests: XCTestCase {
         XCTAssertTrue(SafetyPolicy.isDuplicate("　", recent: []))
     }
 
-    func testOutputOnlyCandidateReview() {
-        XCTAssertTrue(LocalModels.canReviewCandidate(decision: "publish", reason: "ok"))
-        XCTAssertTrue(LocalModels.canReviewCandidate(decision: "skip", reason: "private"))
-        XCTAssertTrue(LocalModels.canReviewCandidate(decision: "skip", reason: "sensitive"))
-        XCTAssertFalse(LocalModels.canReviewCandidate(decision: "skip", reason: "no_speech"))
-        XCTAssertFalse(LocalModels.canReviewCandidate(decision: "skip", reason: "duplicate"))
+    func testSummaryRejectionReasons() {
+        XCTAssertEqual(SafetyPolicy.summaryRejectionReason("病気の話なんだって。"), "sensitive_output")
+        XCTAssertEqual(SafetyPolicy.summaryRejectionReason("説明したという話という話をしていたよ。"), "vague_summary")
+        XCTAssertEqual(SafetyPolicy.summaryRejectionReason("説明した。"), "invalid_summary_format")
     }
 
     func testRetentionBoundary() {
@@ -100,6 +103,11 @@ final class CoreTests: XCTestCase {
         try withStore { store, _ in
             let audio = store.audioDirectory.appendingPathComponent("synthetic.caf")
             let transcript = store.transcriptDirectory.appendingPathComponent("synthetic.txt")
+            let id = String(repeating: "b", count: 64)
+            try store.writeReviewTrace(ReviewTrace(candidateTopic: "庭", candidateText: "庭にシダが育つなんだって。", gateReason: "ok"), id: id)
+            XCTAssertEqual(try store.reviewTrace(id: id)?.candidateTopic, "庭")
+            let trace = store.transcriptDirectory.appendingPathComponent(id + ".review.json")
+            XCTAssertEqual((try FileManager.default.attributesOfItem(atPath: trace.path)[.posixPermissions] as? NSNumber)?.intValue, 0o600)
             try Data("synthetic".utf8).write(to: audio)
             try Data("synthetic".utf8).write(to: transcript)
             try store.expire(now: Date().addingTimeInterval(Retention.audio + 2))
@@ -107,6 +115,7 @@ final class CoreTests: XCTestCase {
             XCTAssertTrue(FileManager.default.fileExists(atPath: transcript.path))
             try store.expire(now: Date().addingTimeInterval(Retention.transcript + 2))
             XCTAssertFalse(FileManager.default.fileExists(atPath: transcript.path))
+            XCTAssertFalse(FileManager.default.fileExists(atPath: trace.path))
         }
     }
 

@@ -83,22 +83,41 @@ public enum SafetyPolicy {
     }
 
     public static func normalizeSummary(_ raw: String) -> String? {
-        let text = raw.trimmingCharacters(in: .whitespacesAndNewlines).precomposedStringWithCanonicalMapping
+        var text = raw.trimmingCharacters(in: .whitespacesAndNewlines).precomposedStringWithCanonicalMapping
+        // A malformed structured response can put extra generation after an already closed text field.
+        if let terminator = text.range(of: "。」}") {
+            text = String(text[..<terminator.lowerBound]) + "。"
+        }
+        // FoundationModels sometimes appends an empty structured-output terminator after the final punctuation.
+        if let period = text.lastIndex(of: "。"), period != text.index(before: text.endIndex) {
+            let tail = String(text[text.index(after: period)...])
+            if tail.range(of: #"^(?:[」』}\]>\s]|<ctrl[0-9]+>)*$"#, options: .regularExpression) != nil {
+                text = String(text[...period])
+            }
+        }
         guard !text.isEmpty, text.count <= 140,
               !text.contains("\n"), !text.contains("\r"),
-              text.filter({ $0 == "。" }).count == 1,
+              (1...2).contains(text.filter({ $0 == "。" }).count),
               !text.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) || $0.properties.generalCategory == .format }),
               text.range(of: #"[ぁ-んァ-ヶ一-龯]"#, options: .regularExpression) != nil,
-              text.hasSuffix("なんだって。") || text.hasSuffix("という話をしていたよ。"),
+              ["なんだって。", "んだって。", "という話をしていたよ。", "と話していたよ。"].contains(where: text.hasSuffix),
               !isSensitive(text),
-              !["SKIP", "見送り", "不明", "話という話", "```", "<", ">", "{", "}", "■", "＊", "***", "[伏"].contains(where: text.contains)
+              !["SKIP", "見送り", "不明", "話という話", "話題だったよ", "```", "<", ">", "{", "}", "■", "＊", "***", "[伏"].contains(where: text.contains)
         else { return nil }
         return text
     }
 
+    public static func summaryRejectionReason(_ raw: String) -> String {
+        let text = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        if text.isEmpty { return "no_clear_topic" }
+        if isSensitive(text) { return "sensitive_output" }
+        if ["話という話", "話題だった", "何かについて", "[伏", "SKIP", "見送り"].contains(where: text.contains) { return "vague_summary" }
+        return "invalid_summary_format"
+    }
+
     public static func fingerprint(_ text: String) -> String {
         var value = text
-        for suffix in ["という話をしていたよ。", "なんだって。"] where value.hasSuffix(suffix) { value.removeLast(suffix.count) }
+        for suffix in ["という話をしていたよ。", "と話していたよ。", "なんだって。", "んだって。"] where value.hasSuffix(suffix) { value.removeLast(suffix.count) }
         return String(value.precomposedStringWithCompatibilityMapping.lowercased().unicodeScalars.filter { CharacterSet.alphanumerics.contains($0) })
     }
 

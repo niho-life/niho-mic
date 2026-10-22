@@ -16,8 +16,9 @@ struct NihoMic {
     niho-mic run --input <機器UID> [--segment-seconds <2〜300>]
     niho-mic once --audio <音声ファイル>
     niho-mic inspect [--latest <1〜50>]
+    niho-mic selection-prompt
     niho-mic prompt
-    niho-mic preview --segment <区切りID> [--prompt-file <テキストファイル>]
+    niho-mic preview --segment <区切りID> [--selection-prompt-file <ファイル>] [--prompt-file <ファイル>]
     niho-mic prune
     niho-mic delete-logs --confirm
     niho-mic help
@@ -30,9 +31,9 @@ struct NihoMic {
     音声72時間、文字起こし168時間。起動時と稼働中に期限切れを削除します。
     停止中は削除されないため、再起動時または prune で削除してください。
     短文ログは保存先の logs/YYYY-MM-DD.jsonl です。標準出力には本文を表示しません。
-    inspect はこの端末に限り、直近の生の文字起こし・見送り理由・要約候補・最終短文を表示します。画面共有中は注意してください。
-    preview は保存済み文字起こしを現在の Mac 内 AI で再要約して表示します。ログや採用判定は変更しません。
-    prompt の出力をファイルへ保存・編集し、preview --prompt-file で試せます。最終の安全性確認は常に適用されます。
+    inspect はこの端末に限り、文字起こし・使用判定・要約・最終チェックを順に表示します。画面共有中は注意してください。
+    preview は保存済み文字起こしを現在の Mac 内 AI で使用判定・再要約します。ログは変更しません。
+    selection-prompt / prompt の出力をファイルへ保存・編集し、preview で試せます。最終の安全性確認は常に適用されます。
     モデルの取得は install-speech-model の明示操作のみ。Mac 内 AI は Apple Intelligence 設定で準備します。
     """
 
@@ -103,38 +104,26 @@ struct NihoMic {
             let store = try PrivateStore()
             for record in try store.records().suffix(count) {
                 print("\n=== \(record.generatedAt.formatted(date: .abbreviated, time: .standard)) / \(record.segmentID) ===")
-                print("1. 文字起こし:\n\(try store.transcript(id: record.segmentID) ?? "（保存なし・期限切れ・録音段階で見送り）")")
-                let trace = try store.reviewTrace(id: record.segmentID)
-                print("2. 判定: \(record.decision == "publish" ? "採用" : "見送り") / \(reasonDescription(record.reason)) [\(record.reason)]")
-                if let trace {
-                    print("   要約候補: \(trace.candidateText.isEmpty ? "（生成なし）" : trace.candidateText)")
-                    print("   候補の話題: \(trace.candidateTopic.isEmpty ? "（生成なし）" : trace.candidateTopic)")
-                } else { print("   要約候補: （旧記録のため保存なし）") }
-                print("3. 最終短文: \(record.text.isEmpty ? "（なし）" : record.text)")
+                try printReview(transcript: store.transcript(id: record.segmentID), record: record, trace: store.reviewTrace(id: record.segmentID))
             }
+        case "selection-prompt":
+            guard tail.isEmpty else { throw MicError.invalidArguments }
+            print(LocalModels.selectionInstructions)
         case "prompt":
             guard tail.isEmpty else { throw MicError.invalidArguments }
             print(LocalModels.instructions)
         case "preview":
-            let flags = try options(tail, allowed: ["--segment", "--prompt-file"])
+            let flags = try options(tail, allowed: ["--segment", "--prompt-file", "--selection-prompt-file"])
             guard let id = flags["--segment"], id.range(of: #"^[a-f0-9]{64}$"#, options: .regularExpression) != nil else { throw MicError.invalidArguments }
             let store = try PrivateStore()
             guard let record = try store.records().first(where: { $0.segmentID == id }),
                   let transcript = try store.transcript(id: id) else { throw MicError.invalidArguments }
-            let summaryInstructions: String?
-            if let path = flags["--prompt-file"] {
-                let url = URL(fileURLWithPath: (path as NSString).expandingTildeInPath)
-                let data = try Data(contentsOf: url)
-                guard !data.isEmpty, data.count <= 16_384, let value = String(data: data, encoding: .utf8) else { throw MicError.invalidArguments }
-                summaryInstructions = value
-            } else { summaryInstructions = nil }
+            let summaryInstructions = try readInstructions(flags["--prompt-file"])
+            let selectionInstructions = try readInstructions(flags["--selection-prompt-file"])
             try await LocalModels.requireReady()
-            let outcome = try await LocalModels.summarize(transcript, recent: [], id: id, endedAt: record.audioEndedAt, summaryInstructions: summaryInstructions)
-            print("1. 文字起こし:\n\(transcript)")
-            print("2. 判定: \(outcome.record.decision == "publish" ? "採用" : "見送り") / \(reasonDescription(outcome.record.reason)) [\(outcome.record.reason)]")
-            print("   要約候補: \(outcome.trace.candidateText.isEmpty ? "（生成なし）" : outcome.trace.candidateText)")
-            print("   候補の話題: \(outcome.trace.candidateTopic.isEmpty ? "（生成なし）" : outcome.trace.candidateTopic)")
-            print("3. 最終短文: \(outcome.record.text.isEmpty ? "（なし）" : outcome.record.text)")
+            let outcome = try await LocalModels.summarize(transcript, recent: [], id: id, endedAt: record.audioEndedAt,
+                                                          summaryInstructions: summaryInstructions, selectionInstructions: selectionInstructions)
+            printReview(transcript: transcript, record: outcome.record, trace: outcome.trace, preview: true)
         case "delete-logs":
             guard tail == ["--confirm"] else { throw MicError.invalidArguments }
             let store = try PrivateStore(); try store.deleteLogs()
@@ -171,14 +160,40 @@ struct NihoMic {
         }
     }
 
+    static func readInstructions(_ path: String?) throws -> String? {
+        guard let path else { return nil }
+        let url = URL(fileURLWithPath: (path as NSString).expandingTildeInPath)
+        let data = try Data(contentsOf: url)
+        guard !data.isEmpty, data.count <= 16_384, let value = String(data: data, encoding: .utf8) else { throw MicError.invalidArguments }
+        return value
+    }
+
+    static func printReview(transcript: String?, record: LocalRecord, trace: ReviewTrace?, preview: Bool = false) {
+        print("1. 文字起こし:\n\(transcript ?? "（保存なし・期限切れ・録音段階で見送り）")")
+        if let decision = trace?.selectionDecision, let reason = trace?.selectionReason {
+            print("2. 使用判定: \(decision == "use" ? "使用" : "見送り") / \(reasonDescription(reason)) [\(reason)]")
+            if let topic = trace?.selectedTopic, !topic.isEmpty { print("   選んだ話題: \(topic)") }
+            if let explanation = trace?.selectionExplanation, !explanation.isEmpty { print("   理由: \(explanation)") }
+        } else if ["audio_too_short", "no_speech"].contains(record.reason) {
+            print("2. 使用判定: 見送り / \(reasonDescription(record.reason)) [\(record.reason)]")
+        } else { print("2. 使用判定: （旧版のため記録なし）") }
+        let candidate = trace?.candidateText ?? ""
+        print("3. 要約候補: \(candidate.isEmpty ? "（生成なし）" : candidate)")
+        print("4. 最終チェック: \(record.decision == "publish" ? "採用" : "見送り") / \(reasonDescription(record.reason)) [\(record.reason)]")
+        print("   最終短文: \(record.text.isEmpty ? "（なし）" : record.text)")
+        print("5. 発信: \(preview ? "試行のみ・保存なし" : (record.decision == "publish" ? "Mac 内ログに記録済み" : "なし"))")
+    }
+
     static func reasonDescription(_ reason: String) -> String {
         switch reason {
         case "ok": return "内容を採用"
         case "no_speech", "audio_too_short", "blank_or_short": return "発話がない、または短すぎる"
         case "unclear", "no_clear_topic": return "話題を読み取れない"
+        case "no_shareable_topic": return "理解できる共有価値のある話題を切り出せない"
+        case "selection_model_error": return "Mac 内 AI の使用判定を完了できなかった"
         case "too_long_for_local_context": return "文字起こしが長すぎる"
         case "unsafe_topic": return "候補の話題名に個人情報またはセンシティブな内容がある"
-        case "personal_name_output": return "要約候補に会話中の人名がある"
+        case "personal_name_output": return "旧版の氏名検査で見送り"
         case "sensitive_output": return "要約候補に個人情報またはセンシティブな内容がある"
         case "vague_summary": return "要約候補が抽象的で内容が伝わらない"
         case "invalid_summary_format": return "要約候補が140字・1〜2文・伝聞などの形式に合わない"

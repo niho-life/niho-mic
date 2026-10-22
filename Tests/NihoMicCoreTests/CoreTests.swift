@@ -16,10 +16,9 @@ final class CoreTests: XCTestCase {
         XCTAssertFalse(SafetyPolicy.isSensitive("古い学校の校舎に使う木材なんだって。"))
         let namedSpeaker = "松本さんが、西御門の谷戸には縄文時代から人が住んでいたらしいと話しました。谷戸の成り立ちについての話です。"
         XCTAssertNil(SafetyPolicy.transcriptRejection(namedSpeaker))
-        XCTAssertTrue(SafetyPolicy.isSensitive("松本さんが谷戸を説明したなんだって。"))
-        XCTAssertTrue(SafetyPolicy.isSensitive("林さんが庭を説明したなんだって。"))
-        XCTAssertTrue(SafetyPolicy.containsSourceName("松本の話なんだって。", transcript: namedSpeaker))
-        XCTAssertFalse(SafetyPolicy.containsSourceName("西御門の谷戸の話なんだって。", transcript: namedSpeaker))
+        XCTAssertFalse(SafetyPolicy.isSensitive("松本さんが谷戸を説明したんだって。"))
+        XCTAssertFalse(SafetyPolicy.isSensitive("林さんが庭を説明したんだって。"))
+        XCTAssertEqual(SafetyPolicy.normalizeSummary("松本さんは千葉出身のデザイナーなんだって。"), "松本さんは千葉出身のデザイナーなんだって。")
         XCTAssertNil(SafetyPolicy.transcriptRejection("松本さんの家族について話しています。庭の話もしました。"))
         XCTAssertNil(SafetyPolicy.normalizeSummary("松本さんの家族が庭で話したなんだって。"))
     }
@@ -39,6 +38,9 @@ final class CoreTests: XCTestCase {
         XCTAssertEqual(SafetyPolicy.normalizeSummary(text + "」}<ctrl46>}"), text)
         XCTAssertEqual(SafetyPolicy.normalizeSummary(text + "」} 文の外に続く壊れた出力。"), text)
         XCTAssertEqual(SafetyPolicy.normalizeSummary("庭ではシダが育つんだって。"), "庭ではシダが育つんだって。")
+        XCTAssertEqual(SafetyPolicy.normalizeSummary("日陰の庭でシダが育つという話だ。"), "日陰の庭でシダが育つという話だ。")
+        XCTAssertEqual(SafetyPolicy.normalizeSummary("日陰の庭ではシダが育つようだ。"), "日陰の庭ではシダが育つようだ。")
+        XCTAssertEqual(SafetyPolicy.normalizeSummary("松本さんは千葉出身のデザイナーみたいだよ。"), "松本さんは千葉出身のデザイナーみたいだよ。")
         XCTAssertEqual(SafetyPolicy.normalizeSummary("庭ではシダが育つなんだって。葉を残して冬を越すなんだって。"), "庭ではシダが育つなんだって。葉を残して冬を越すなんだって。")
         XCTAssertNil(SafetyPolicy.normalizeSummary(String(repeating: "庭", count: 135) + "なんだって。"))
         XCTAssertNotNil(SafetyPolicy.normalizeSummary(String(repeating: "庭", count: 134) + "なんだって。"))
@@ -74,6 +76,14 @@ final class CoreTests: XCTestCase {
         XCTAssertTrue(Retention.expired(createdAt: now.addingTimeInterval(-Retention.audio), lifetime: Retention.audio, now: now))
         XCTAssertFalse(Retention.expired(createdAt: now.addingTimeInterval(-Retention.transcript + 1), lifetime: Retention.transcript, now: now))
         XCTAssertTrue(Retention.expired(createdAt: now.addingTimeInterval(-Retention.transcript), lifetime: Retention.transcript, now: now))
+    }
+
+    func testOldReviewTraceRemainsReadable() throws {
+        let old = #"{"candidateTopic":"庭","candidateText":"庭の話なんだって。","normalizedText":"庭の話なんだって。","gateReason":"ok"}"#
+        let trace = try JSONDecoder().decode(ReviewTrace.self, from: Data(old.utf8))
+        XCTAssertNil(trace.selectionDecision)
+        XCTAssertNil(trace.selectedTopic)
+        XCTAssertEqual(trace.candidateTopic, "庭")
     }
 
     func withStore(_ body: (PrivateStore, URL) throws -> Void) throws {

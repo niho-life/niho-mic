@@ -4,13 +4,13 @@ import AVFoundation
 
 final class CoreTests: XCTestCase {
     func testSensitiveWholeWindow() {
-        for text in ["来週、Aさんが病院へ行く", "政治の話と日陰の植物の育て方", "連絡は sample@example.com です", "電話 090-1234-5678", "神奈川県の三丁目という住所", "家族で旅行に行った話", "未成年者についての話", "今いる人数は三人です", "hello https://example.com", "お金の相談です"] {
+        for text in ["来週、Aさんが病院へ行く", "政治の話と日陰の植物の育て方", "連絡は sample@example.com です", "電話 090-1234-5678", "神奈川県の三丁目という住所", "家族で旅行に行った話", "未成年者についての話", "今いる人数は三人です", "hello https://example.com", "お金の相談です", "田中さんが鎌倉に住んでいる話"] {
             XCTAssertTrue(SafetyPolicy.isSensitive(text), "synthetic sensitive fixture was accepted")
         }
     }
 
     func testSafeSyntheticTopics() {
-        for text in ["日陰の庭ではシダの葉が美しく育つという植物の話です。", "西御門の谷戸には縄文時代から人がいたらしいという話です。", "木材の乾燥方法や道具の手入れの工夫について話しています。"] {
+        for text in ["日陰の庭ではシダの葉が美しく育つという植物の話です。", "西御門の谷戸には縄文時代から人が住んでいたらしいという話です。", "木材の乾燥方法や道具の手入れの工夫について話しています。"] {
             XCTAssertNil(SafetyPolicy.transcriptRejection(text))
         }
     }

@@ -11,10 +11,11 @@ struct NihoMic {
     にほちゃんマイク v1 — macOS 26+ / Apple Silicon / Mac 内処理のみ
 
     niho-mic inputs
-    niho-mic doctor [--input <機器UID>]
+    niho-mic doctor [--input <機器UID>] [--asr apple|whisper]
     niho-mic install-speech-model
-    niho-mic run --input <機器UID> [--segment-seconds <2〜300>]
-    niho-mic once --audio <音声ファイル>
+    niho-mic run --input <機器UID> [--segment-seconds <2〜300>] [--asr apple|whisper]
+    niho-mic once --audio <音声ファイル> [--asr apple|whisper]
+    niho-mic transcribe --audio <音声ファイル> [--asr apple|whisper]
     niho-mic inspect [--latest <1〜50>]
     niho-mic selection-prompt
     niho-mic prompt
@@ -25,8 +26,10 @@ struct NihoMic {
 
     録音は運営者が目的を説明し、参加者の同意を得てから手動で開始してください。
     run は既定120秒（指定可能範囲2〜300秒）で区切ります。Ctrl-C で録音を止め、最後の区切りを処理します。
+    文字起こしは既定 apple、--asr whisper で Mac 内の無料 Whisper に切り替えます。モデルと whisper-cli は別途準備してください。
     指定機器の切断、既定入力や入力設定の変更を検出すると停止します。
-    once は2〜300秒の録音が対象です。元ファイルは変更しません。
+    once と transcribe は2〜300秒の録音が対象です。元ファイルは変更しません。
+    transcribe は要約・保存せず、生の文字起こしを端末に表示します。画面共有中は注意してください。
     保存先: ~/Library/Application Support/life.niho.mic (0700 / ファイル0600)
     音声72時間、文字起こし168時間。起動時と稼働中に期限切れを削除します。
     停止中は削除されないため、再起動時または prune で削除してください。
@@ -58,6 +61,11 @@ struct NihoMic {
         return result
     }
 
+    static func selectedASR(_ flags: [String: String]) throws -> ASREngine {
+        guard let asr = ASREngine(rawValue: flags["--asr"] ?? "apple") else { throw MicError.invalidArguments }
+        return asr
+    }
+
     static func execute(_ args: [String]) async throws {
         let command = args.first ?? "help", tail = Array(args.dropFirst())
         if ["help", "--help", "-h"].contains(command) { print(help); return }
@@ -69,12 +77,16 @@ struct NihoMic {
             guard tail.isEmpty else { throw MicError.invalidArguments }
             for device in try AudioInputs.list() { print("\(device.uid)\t\(device.name)") }
         case "doctor":
-            let flags = try options(tail, allowed: ["--input"])
+            let flags = try options(tail, allowed: ["--input", "--asr"])
+            let asr = try selectedASR(flags)
             let store = try PrivateStore()
             print("OS: \(ProcessInfo.processInfo.operatingSystemVersionString)")
             print("SpeechTranscriber: \(SpeechTranscriber.isAvailable ? "available" : "unavailable")")
             do { print("日本語音声モデル: \(try await LocalModels.speechStatus())") }
             catch { print("日本語音声モデル: unavailable") }
+            do { try WhisperASR.requireReady(store: store); print("Whisper: ready") }
+            catch { print("Whisper: unavailable (README の準備手順を確認)") }
+            print("選択した文字起こし: \(asr.rawValue)")
             let model = SystemLanguageModel.default
             print("Mac 内 AI: \(model.availability)")
             print("Mac 内 AI 日本語: \(model.supportsLocale(Locale(identifier: "ja-JP")) ? "supported" : "unsupported")")
@@ -84,7 +96,7 @@ struct NihoMic {
                 print("選択入力: available (UID一致)")
             } else { print("選択入力: 未指定。run には --input が必須です。") }
             print("保存先: \(store.root.path) (期限削除済み)")
-            try await LocalModels.requireReady()
+            try await LocalModels.requireReady(asr: asr, store: store)
         case "install-speech-model":
             guard tail.isEmpty else { throw MicError.invalidArguments }
             print("日本語音声モデルの取得を開始します。")
@@ -129,10 +141,11 @@ struct NihoMic {
             let store = try PrivateStore(); try store.deleteLogs()
             print("短文ログを削除しました。処理済み判定も削除されます。")
         case "once":
-            let flags = try options(tail, allowed: ["--audio"])
+            let flags = try options(tail, allowed: ["--audio", "--asr"])
             guard let path = flags["--audio"] else { throw MicError.invalidArguments }
+            let asr = try selectedASR(flags)
             let store = try PrivateStore()
-            try await LocalModels.requireReady()
+            try await LocalModels.requireReady(asr: asr, store: store)
             let source = URL(fileURLWithPath: (path as NSString).expandingTildeInPath)
             // Validate before importing; never copy an arbitrarily long recording.
             let audio: AVAudioFile
@@ -140,20 +153,40 @@ struct NihoMic {
             let duration = Double(audio.length) / audio.processingFormat.sampleRate
             guard duration.isFinite, duration > 0 else { throw MicError.invalidAudio }
             guard duration <= 300 else { throw MicError.audioTooLong }
-            let pipeline = Pipeline(store: store)
+            let pipeline = Pipeline(store: store, asr: asr)
             try await resume(store, pipeline)
             try await pipeline.process(source)
+        case "transcribe":
+            let flags = try options(tail, allowed: ["--audio", "--asr"])
+            guard let path = flags["--audio"] else { throw MicError.invalidArguments }
+            let asr = try selectedASR(flags)
+            let store = try PrivateStore()
+            let source = URL(fileURLWithPath: (path as NSString).expandingTildeInPath)
+            let audio: AVAudioFile
+            do { audio = try AVAudioFile(forReading: source) } catch { throw MicError.invalidAudio }
+            let duration = Double(audio.length) / audio.processingFormat.sampleRate
+            guard duration.isFinite, duration >= 2, duration <= 300 else { throw MicError.invalidAudio }
+            let transcript: String
+            switch asr {
+            case .apple:
+                guard try await LocalModels.speechStatus() == .installed else { throw MicError.japaneseModelMissing }
+                transcript = try await LocalModels.transcribe(source)
+            case .whisper:
+                transcript = try await WhisperASR.transcribe(source, store: store)
+            }
+            print(transcript)
         case "run":
-            let flags = try options(tail, allowed: ["--input", "--segment-seconds"])
+            let flags = try options(tail, allowed: ["--input", "--segment-seconds", "--asr"])
             guard let uid = flags["--input"] else { throw MicError.invalidArguments }
+            let asr = try selectedASR(flags)
             let seconds: Double
             if let value = flags["--segment-seconds"] {
                 guard let parsed = Double(value), parsed.isFinite, (2...300).contains(parsed) else { throw MicError.invalidArguments }
                 seconds = parsed
             } else { seconds = 120 }
             let store = try PrivateStore()
-            try await LocalModels.requireReady()
-            let pipeline = Pipeline(store: store)
+            try await LocalModels.requireReady(asr: asr, store: store)
+            let pipeline = Pipeline(store: store, asr: asr)
             try await resume(store, pipeline)
             try await run(uid: uid, seconds: seconds, store: store, pipeline: pipeline)
         default: throw MicError.invalidArguments

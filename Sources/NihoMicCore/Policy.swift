@@ -4,6 +4,7 @@ public enum MicError: String, Error, LocalizedError {
     case invalidArguments, unsupportedPlatform, speechUnavailable, japaneseModelMissing
     case intelligenceUnavailable, japaneseUnsupported, microphoneDenied, inputUnavailable
     case inputChanged, recordingFailed, transcriptionFailed, generationFailed
+    case whisperUnavailable, whisperModelMissing
     case unsafeStorage, storageBusy, invalidAudio, audioTooLong, corruptLog
     public var errorDescription: String? {
         switch self {
@@ -18,6 +19,8 @@ public enum MicError: String, Error, LocalizedError {
         case .inputChanged: "入力機器の切断または入力設定の変更を検出したため、録音を停止しました。"
         case .recordingFailed: "音声の保存に失敗したため、録音を停止しました。"
         case .transcriptionFailed: "Mac 内の文字起こしに失敗しました。音声内容は診断ログへ出力しません。"
+        case .whisperUnavailable: "whisper-cli が見つかりません。Homebrew で whisper-cpp をインストールしてください。"
+        case .whisperModelMissing: "Whisper の日本語対応モデルが未準備です。README のモデル取得手順を実行してください。"
         case .generationFailed: "Mac 内の要約処理に失敗しました。内容は診断ログへ出力しません。"
         case .unsafeStorage: "専用保存先の安全性または権限を確認できません。"
         case .storageBusy: "別の niho-mic が同じ保存先を使用しています。"
@@ -54,6 +57,8 @@ public enum SafetyPolicy {
     }
 
     public static func normalizeSummary(_ raw: String) -> String? {
+        // Reject runaway structured generation instead of hiding a large malformed tail.
+        guard raw.count <= 1000 else { return nil }
         var text = raw.trimmingCharacters(in: .whitespacesAndNewlines).precomposedStringWithCanonicalMapping
         // A malformed structured response can put extra generation after an already closed text field.
         if let terminator = text.range(of: "。」}") {

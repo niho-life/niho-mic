@@ -10,9 +10,18 @@ final class CoreTests: XCTestCase {
     }
 
     func testSafeSyntheticTopics() {
-        for text in ["日陰の庭ではシダの葉が美しく育つという植物の話です。", "西御門の谷戸には縄文時代から人が住んでいたらしいという話です。", "木材の乾燥方法や道具の手入れの工夫について話しています。"] {
+        for text in ["日陰の庭ではシダの葉が美しく育つという植物の話です。", "西御門の谷戸には縄文時代から人が住んでいたらしいという話です。", "木材の乾燥方法や道具の手入れの工夫について話しています。", "古い学校の校舎に使う木材について話しています。"] {
             XCTAssertNil(SafetyPolicy.transcriptRejection(text))
         }
+        XCTAssertFalse(SafetyPolicy.isSensitive("古い学校の校舎に使う木材なんだって。"))
+        let namedSpeaker = "松本さんが、西御門の谷戸には縄文時代から人が住んでいたらしいと話しました。谷戸の成り立ちについての話です。"
+        XCTAssertNil(SafetyPolicy.transcriptRejection(namedSpeaker))
+        XCTAssertTrue(SafetyPolicy.isSensitive("松本さんが谷戸を説明したなんだって。"))
+        XCTAssertTrue(SafetyPolicy.isSensitive("林さんが庭を説明したなんだって。"))
+        XCTAssertTrue(SafetyPolicy.containsSourceName("松本の話なんだって。", transcript: namedSpeaker))
+        XCTAssertFalse(SafetyPolicy.containsSourceName("西御門の谷戸の話なんだって。", transcript: namedSpeaker))
+        XCTAssertNil(SafetyPolicy.transcriptRejection("松本さんの家族について話しています。庭の話もしました。"))
+        XCTAssertNil(SafetyPolicy.normalizeSummary("松本さんの家族が庭で話したなんだって。"))
     }
 
     func testBlankShortAndUnclear() {
@@ -20,6 +29,7 @@ final class CoreTests: XCTestCase {
         XCTAssertEqual(SafetyPolicy.transcriptRejection("はい、そうですね"), "blank_or_short")
         XCTAssertEqual(SafetyPolicy.transcriptRejection("この部分は聞き取れず、不明瞭で意味を取れない音声です。"), "unclear")
         XCTAssertEqual(SafetyPolicy.transcriptRejection(String(repeating: "庭", count: 6001)), "too_long_for_local_context")
+        XCTAssertNil(SafetyPolicy.transcriptRejection("庭のシダの育て方を話しました。途中で松本さんの家族についても短く話しました。"))
     }
 
     func testSummaryNormalizationDoesNotTruncate() {
@@ -34,6 +44,7 @@ final class CoreTests: XCTestCase {
         XCTAssertNil(SafetyPolicy.normalizeSummary("[伏せ字]なんだって。"))
         XCTAssertNil(SafetyPolicy.normalizeSummary("A garden story."))
         XCTAssertNil(SafetyPolicy.normalizeSummary("説明の流れが話題だったよ。という話をしていたよ。"))
+        XCTAssertNil(SafetyPolicy.normalizeSummary("庭の植物についての話という話をしていたよ。"))
     }
 
     func testDuplicatesAndNewTopics() {
@@ -44,6 +55,14 @@ final class CoreTests: XCTestCase {
         XCTAssertFalse(SafetyPolicy.isDuplicate("木材を乾燥させると反りを防げるという話をしていたよ。", recent: recent))
         XCTAssertFalse(SafetyPolicy.isDuplicate("日陰でも育てやすいシダの水やりの工夫に加え、鉢底へ軽石を入れると根腐れを防げるという話をしていたよ。", recent: recent))
         XCTAssertTrue(SafetyPolicy.isDuplicate("　", recent: []))
+    }
+
+    func testOutputOnlyCandidateReview() {
+        XCTAssertTrue(LocalModels.canReviewCandidate(decision: "publish", reason: "ok"))
+        XCTAssertTrue(LocalModels.canReviewCandidate(decision: "skip", reason: "private"))
+        XCTAssertTrue(LocalModels.canReviewCandidate(decision: "skip", reason: "sensitive"))
+        XCTAssertFalse(LocalModels.canReviewCandidate(decision: "skip", reason: "no_speech"))
+        XCTAssertFalse(LocalModels.canReviewCandidate(decision: "skip", reason: "duplicate"))
     }
 
     func testRetentionBoundary() {

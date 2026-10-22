@@ -1,0 +1,110 @@
+import Foundation
+import NaturalLanguage
+
+public enum MicError: String, Error, LocalizedError {
+    case invalidArguments, unsupportedPlatform, speechUnavailable, japaneseModelMissing
+    case intelligenceUnavailable, japaneseUnsupported, microphoneDenied, inputUnavailable
+    case inputChanged, recordingFailed, transcriptionFailed, generationFailed
+    case unsafeStorage, storageBusy, invalidAudio, audioTooLong, corruptLog
+    public var errorDescription: String? {
+        switch self {
+        case .invalidArguments: "引数が不正です。niho-mic help を確認してください。"
+        case .unsupportedPlatform: "macOS 26 以上の Apple Silicon が必要です。"
+        case .speechUnavailable: "SpeechTranscriber を利用できません。"
+        case .japaneseModelMissing: "日本語音声モデルが未準備です。niho-mic install-speech-model を明示実行してください。"
+        case .intelligenceUnavailable: "Mac 内 AI が未準備です。システム設定の Apple Intelligence を有効にし、モデルのダウンロード完了を待って doctor を再実行してください。"
+        case .japaneseUnsupported: "Mac 内 AI の日本語対応を確認できません。"
+        case .microphoneDenied: "マイクの使用が許可されていません。システム設定のプライバシーとセキュリティで起動元ターミナルを確認してください。"
+        case .inputUnavailable: "指定された入力機器が見つからないか、使用できません。inputs を再確認してください。"
+        case .inputChanged: "入力機器の切断または入力設定の変更を検出したため、録音を停止しました。"
+        case .recordingFailed: "音声の保存に失敗したため、録音を停止しました。"
+        case .transcriptionFailed: "Mac 内の文字起こしに失敗しました。音声内容は診断ログへ出力しません。"
+        case .generationFailed: "Mac 内の要約処理に失敗しました。内容は診断ログへ出力しません。"
+        case .unsafeStorage: "専用保存先の安全性または権限を確認できません。"
+        case .storageBusy: "別の niho-mic が同じ保存先を使用しています。"
+        case .invalidAudio: "音声を読み取れないか、短すぎます。"
+        case .audioTooLong: "once は最長 300 秒です。音声を分割して再実行してください。"
+        case .corruptLog: "既存ログの整合性を確認できないため、重複防止のため処理を停止しました。"
+        }
+    }
+}
+
+public enum SafetyPolicy {
+    // Deliberately conservative: an unsafe topic rejects the entire window.
+    static let sensitive = ["政治", "選挙", "政党", "宗教", "信仰", "教会", "神様", "病気", "健康", "病院", "医者", "薬", "診断", "妊娠", "障害", "自殺", "うつ", "家族", "家庭", "妻", "夫", "嫁", "旦那", "息子", "娘", "父", "母", "離婚", "結婚", "恋人", "彼氏", "彼女", "付き合", "人間関係", "不倫", "喧嘩", "いじめ", "未成年", "子供", "子ども", "小学生", "中学生", "高校生", "赤ちゃん", "お金", "金銭", "借金", "年収", "給料", "給与", "貯金", "口座", "クレジット", "万円", "円", "住所", "電話", "メール", "連絡先", "本名", "秘密", "個人情報", "さん", "くん", "ちゃん", "氏", "先生", "私", "僕", "俺", "わたし", "あなた", "勤務先", "勤め", "学校", "住んで", "引っ越", "逮捕", "犯罪", "差別", "性的", "セックス", "自宅", "実家", "出身", "誕生日", "歳", "才", "自己紹介", "名前"]
+
+    public static func isSensitive(_ text: String) -> Bool {
+        let normalized = text.precomposedStringWithCompatibilityMapping.lowercased()
+        let contextualOnly = Set(["私", "僕", "俺", "わたし", "あなた", "さん", "くん", "ちゃん", "氏", "先生", "円", "母", "父", "妻", "夫", "薬", "歳", "才"])
+        if (sensitive.filter { !contextualOnly.contains($0) } + ["服薬", "治療", "訪問予定", "来週", "明日", "来ている", "来てる", "今いる", "何人", "人数", "入室", "退室", "到着", "出発", "滞在", "出勤", "退勤"]).contains(where: normalized.contains) { return true }
+        let patterns = [#"[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}"#,
+                        #"(?:\+?\d[\d ()-]{6,}\d)"#, #"https?://|www\.|@[\w]+"#,
+                        #"\d{2,4}[-ー]\d{1,4}|[一二三四五六七八九十]+丁目|\d+番地"#,
+                        #"\d+(?:歳|才|円)|(?:妻|夫|父|母)(?:が|は|の|と)|(?:薬)(?:を飲|を処方)"#]
+        if patterns.contains(where: { normalized.range(of: $0, options: [.regularExpression, .caseInsensitive]) != nil }) { return true }
+        let tagger = NLTagger(tagSchemes: [.nameType])
+        tagger.string = text
+        var found = false
+        tagger.enumerateTags(in: text.startIndex..<text.endIndex, unit: .word, scheme: .nameType, options: [.joinNames, .omitWhitespace, .omitPunctuation]) { tag, _ in
+            if tag == .personalName { found = true; return false }
+            return true
+        }
+        return found
+    }
+
+    public static func transcriptRejection(_ text: String) -> String? {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.count < 20 { return "blank_or_short" }
+        if trimmed.count > 6000 { return "too_long_for_local_context" }
+        if isSensitive(trimmed) { return "sensitive_topic" }
+        if ["聞き取れ", "不明瞭", "判別不能", "ご視聴ありがとうございました", "字幕"].contains(where: trimmed.contains) { return "unclear" }
+        return nil
+    }
+
+    public static func normalizeSummary(_ raw: String) -> String? {
+        let text = raw.trimmingCharacters(in: .whitespacesAndNewlines).precomposedStringWithCanonicalMapping
+        guard !text.isEmpty, text.count <= 140,
+              !text.contains("\n"), !text.contains("\r"),
+              !text.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) || $0.properties.generalCategory == .format }),
+              text.range(of: #"[ぁ-んァ-ヶ一-龯]"#, options: .regularExpression) != nil,
+              text.hasSuffix("なんだって。") || text.hasSuffix("という話をしていたよ。"),
+              !isSensitive(text),
+              !["SKIP", "見送り", "不明", "```", "<", ">", "{", "}", "■", "＊", "***", "[伏"].contains(where: text.contains)
+        else { return nil }
+        return text
+    }
+
+    public static func fingerprint(_ text: String) -> String {
+        var value = text
+        for suffix in ["という話をしていたよ。", "なんだって。"] where value.hasSuffix(suffix) { value.removeLast(suffix.count) }
+        return String(value.precomposedStringWithCompatibilityMapping.lowercased().unicodeScalars.filter { CharacterSet.alphanumerics.contains($0) })
+    }
+
+    public static func isDuplicate(_ candidate: String, recent: [String]) -> Bool {
+        let normalized = fingerprint(candidate)
+        guard !normalized.isEmpty else { return true }
+        func grams(_ value: String) -> Set<String> {
+            let chars = Array(value)
+            guard chars.count > 1 else { return Set([value]) }
+            return Set((0..<(chars.count - 1)).map { String(chars[$0...($0 + 1)]) })
+        }
+        let lhs = grams(normalized)
+        return recent.contains { previous in
+            let rhsText = fingerprint(previous)
+            if normalized == rhsText { return true }
+            let rhs = grams(rhsText)
+            let shared = Double(lhs.intersection(rhs).count)
+            let lengthRatio = Double(min(lhs.count, rhs.count)) / Double(max(1, max(lhs.count, rhs.count)))
+            return shared / Double(max(1, lhs.union(rhs).count)) >= 0.75 ||
+                (lengthRatio >= 0.85 && shared / Double(max(1, min(lhs.count, rhs.count))) >= 0.85)
+        }
+    }
+}
+
+public enum Retention {
+    public static let audio: TimeInterval = 72 * 3600
+    public static let transcript: TimeInterval = 168 * 3600
+    public static func expired(createdAt: Date, lifetime: TimeInterval, now: Date) -> Bool {
+        now.timeIntervalSince(createdAt) >= lifetime
+    }
+}

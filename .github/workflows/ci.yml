@@ -1,0 +1,25 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  swift:
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@v4
+      - name: 公開できないファイルを検査
+        run: |
+          if git ls-files | grep -Ei '(^|/)(\.env($|\.)|data/|recordings/|transcripts/|logs/)|\.(caf|m4a|wav|mp3|aiff|jsonl)$'; then
+            echo '実音声・文字起こし・ログ・秘密設定は公開リポジトリへ追加できません' >&2
+            exit 1
+          fi
+      - name: ビルド
+        run: swift build
+      - name: テスト
+        run: swift test

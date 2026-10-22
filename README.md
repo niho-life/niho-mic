@@ -5,7 +5,7 @@ NIHO 鎌倉で交わされている話の要点を、連絡先や詳しい住所
 ## 現在の範囲（v1）
 
 - 運営者が指定したマイクから録音し、macOS の SpeechTranscriber で Mac 内文字起こしする。
-- Mac 内の AI で「その場の様子が伝わるか、後で役に立つか」を判定して話題を選び、日本語 140 文字以内の伝聞の短文を Mac に保存する。
+- Mac 内の AI で「その場の様子が伝わるか、後で役に立つか」を判定して話題を選び、日本語 140 文字以内の場の共有または伝聞の短文を Mac に保存する。
 - 音声は 72 時間、生の文字起こしは 168 時間保持した後に削除する。
 - NIHOappへの投稿、クラウド文字起こし、自動起動はまだ行わない。
 
@@ -57,7 +57,7 @@ jq -r 'select(.decision == "publish") | .text' "$HOME/Library/Application Suppor
 .build/release/niho-mic inspect --latest 5
 ```
 
-使用判定と要約の指示文は `Sources/NihoMicCore/LocalModels.swift` の `selectionInstructions` と `instructions` です。次の方法ならソースを変更・再ビルドせず、保存済み文字起こしに対して何度でも試せます。`preview` は採用ログを変更せず、重複判定を除く現在の出力検査まで実行します。
+使用判定と要約の指示文は `Sources/NihoMicCore/LocalModels.swift` の `selectionInstructions` と `instructions` です。要約指示は「今こんな話をしている」という場の共有と、後で役立つ知識の両方に対応します。次の方法ならソースを変更・再ビルドせず、保存済み文字起こしに対して何度でも試せます。`preview` は採用ログを変更せず、重複判定を除く現在の出力検査まで実行します。
 
 ```bash
 .build/release/niho-mic selection-prompt > "$HOME/Documents/niho-mic-selection-prompt.txt"

@@ -71,7 +71,7 @@ public enum SafetyPolicy {
               (1...2).contains(text.filter({ $0 == "。" }).count),
               !text.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) || $0.properties.generalCategory == .format }),
               text.range(of: #"[ぁ-んァ-ヶ一-龯]"#, options: .regularExpression) != nil,
-              ["なんだって。", "んだって。", "という話をしていたよ。", "と話していたよ。", "という話だ。", "ようだ。", "らしい。", "みたいだよ。"].contains(where: text.hasSuffix),
+              ["なんだって。", "んだって。", "という話をしていたよ。", "と話していたよ。", "という話だ。", "ようだ。", "らしい。", "みたいだよ。", "よ。"].contains(where: text.hasSuffix),
               !isSensitive(text),
               !["SKIP", "見送り", "不明", "話という話", "話題だったよ", "```", "<", ">", "{", "}", "■", "＊", "***", "[伏"].contains(where: text.contains)
         else { return nil }
@@ -88,7 +88,7 @@ public enum SafetyPolicy {
 
     public static func fingerprint(_ text: String) -> String {
         var value = text
-        for suffix in ["という話をしていたよ。", "と話していたよ。", "という話だ。", "なんだって。", "んだって。", "ようだ。", "らしい。", "みたいだよ。"] where value.hasSuffix(suffix) { value.removeLast(suffix.count) }
+        for suffix in ["という話をしていたよ。", "と話していたよ。", "という話だ。", "なんだって。", "んだって。", "ようだ。", "らしい。", "みたいだよ。", "よ。"] where value.hasSuffix(suffix) { value.removeLast(suffix.count) }
         return String(value.precomposedStringWithCompatibilityMapping.lowercased().unicodeScalars.filter { CharacterSet.alphanumerics.contains($0) })
     }
 

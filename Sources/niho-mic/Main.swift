@@ -196,7 +196,7 @@ struct NihoMic {
         case "personal_name_output": return "旧版の氏名検査で見送り"
         case "sensitive_output": return "要約候補に個人情報またはセンシティブな内容がある"
         case "vague_summary": return "要約候補が抽象的で内容が伝わらない"
-        case "invalid_summary_format": return "要約候補が140字・1〜2文・伝聞などの形式に合わない"
+        case "invalid_summary_format": return "要約候補が140字・1〜2文・文末などの形式に合わない"
         case "duplicate": return "直近とほぼ同じ内容"
         case "safety_review_rejected": return "Mac 内 AI が要約候補の公開を見送った"
         case "safety_model_error": return "Mac 内 AI の安全性確認を完了できなかった"

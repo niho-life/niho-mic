@@ -35,12 +35,13 @@ public enum SafetyPolicy {
 
     public static func isSensitive(_ text: String) -> Bool {
         let normalized = text.precomposedStringWithCompatibilityMapping.lowercased()
-        let contextualOnly = Set(["私", "僕", "俺", "わたし", "あなた", "さん", "くん", "ちゃん", "氏", "先生", "円", "母", "父", "妻", "夫", "薬", "歳", "才"])
+        let contextualOnly = Set(["私", "僕", "俺", "わたし", "あなた", "さん", "くん", "ちゃん", "氏", "先生", "円", "母", "父", "妻", "夫", "薬", "歳", "才", "住んで"])
         if (sensitive.filter { !contextualOnly.contains($0) } + ["服薬", "治療", "訪問予定", "来週", "明日", "来ている", "来てる", "今いる", "何人", "人数", "入室", "退室", "到着", "出発", "滞在", "出勤", "退勤"]).contains(where: normalized.contains) { return true }
         let patterns = [#"[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}"#,
                         #"(?:\+?\d[\d ()-]{6,}\d)"#, #"https?://|www\.|@[\w]+"#,
                         #"\d{2,4}[-ー]\d{1,4}|[一二三四五六七八九十]+丁目|\d+番地"#,
-                        #"\d+(?:歳|才|円)|(?:妻|夫|父|母)(?:が|は|の|と)|(?:薬)(?:を飲|を処方)"#]
+                        #"\d+(?:歳|才|円)|(?:妻|夫|父|母)(?:が|は|の|と)|(?:薬)(?:を飲|を処方)"#,
+                        #"(?:私|僕|俺|わたし|彼|彼女|[A-Za-z一-龯ぁ-んァ-ヶ]{1,8}さん)(?:が|は|も|の)?[^。！？\n]{0,24}住んで"#]
         if patterns.contains(where: { normalized.range(of: $0, options: [.regularExpression, .caseInsensitive]) != nil }) { return true }
         let tagger = NLTagger(tagSchemes: [.nameType])
         tagger.string = text

@@ -22,14 +22,16 @@ public struct ReviewTrace: Codable, Sendable {
     public let selectionReason: String?
     public let selectedTopic: String?
     public let selectionExplanation: String?
+    public let selectionEvidence: String?
     public let candidateTopic: String
     public let candidateText: String
     public let normalizedText: String
     public let gateReason: String
-    public init(selectionDecision: String? = nil, selectionReason: String? = nil, selectedTopic: String? = nil, selectionExplanation: String? = nil,
+    public init(selectionDecision: String? = nil, selectionReason: String? = nil, selectedTopic: String? = nil, selectionExplanation: String? = nil, selectionEvidence: String? = nil,
                 candidateTopic: String = "", candidateText: String = "", normalizedText: String = "", gateReason: String) {
         self.selectionDecision = selectionDecision; self.selectionReason = selectionReason
         self.selectedTopic = selectedTopic; self.selectionExplanation = selectionExplanation
+        self.selectionEvidence = selectionEvidence
         self.candidateTopic = candidateTopic; self.candidateText = candidateText
         self.normalizedText = normalizedText; self.gateReason = gateReason
     }

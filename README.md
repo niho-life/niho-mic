@@ -4,9 +4,10 @@ NIHO 鎌倉で交わされている話の要点を、連絡先や詳しい住所
 
 ## 現在の範囲（v1）
 
-- 運営者が指定したマイクから3分ずつ連続録音する。Mac内で発話の量と明瞭さを判定し、雑音や短い発話だけの区切りは文字起こし前に見送る。
-- macOS の SpeechTranscriber（既定）、ローカルの Whisper、Antigravity CLI の Gemini を明示選択して文字起こしする。
+- 運営者が指定したマイクから3分ずつ連続録音する。Mac内で発話の量と分類確信度を判定し、雑音や談笑が中心で強い発話判定の少ない区切りは文字起こし前に見送る。
+- 既定はローカルWhisperで文字起こしし、macOS SpeechTranscriberの結果と照合する。両者が大きく食い違う区切りは要約しない。Apple単独、Whisper単独、Geminiも明示選択できる。
 - Mac 内の AI で「その場の様子が伝わるか、後で役に立つか」を判定して話題を選び、日本語 140 文字以内の場の共有または伝聞の短文を Mac に保存する。
+- 話題には文字起こしから抜き出した根拠の発言を付け、要約がそこから言えるか別のMac内AIで確認する。主語や因果が根拠を超えたら一度書き直し、なお裏付けられなければ別の話題を一度試す。
 - 音声は 72 時間、生の文字起こしは 168 時間保持した後に削除する。
 - NIHOappへの投稿と自動起動はまだ行わない。Gemini 指定時だけ音声を Google 側へ送る。要約と使用判定は引き続き Mac 内で行う。
 
@@ -37,7 +38,7 @@ Bluetooth マイクを macOS に接続し、**システム設定 → サウン�
 .build/release/niho-mic doctor
 ```
 
-Whisper を使う場合は、MacBook 側でも次を一度実行します。`whisper.cpp` は無料で、モデルは Mac 内に保存します。約 550 MB のダウンロードが必要です。取得後は `doctor --asr whisper` で確認できます。
+既定の照合モード、またはWhisper単独を使う場合は、MacBook 側でも次を一度実行します。`whisper.cpp` は無料で、モデルは Mac 内に保存します。約 550 MB のダウンロードが必要です。取得後は `doctor` でAppleとWhisperの両方を確認できます。
 
 ```bash
 brew install whisper-cpp
@@ -51,7 +52,7 @@ printf '%s  %s\n' \
   '394221709cd5ad1f40c46e6031ca61bce88931e6e088c188294c6d5a55ffa7e2' \
   "$model_dir/ggml-large-v3-turbo-q5_0.bin.partial" | shasum -a 256 -c - && \
   mv "$model_dir/ggml-large-v3-turbo-q5_0.bin.partial" "$model_dir/ggml-large-v3-turbo-q5_0.bin"
-.build/release/niho-mic doctor --asr whisper
+.build/release/niho-mic doctor
 ```
 
 Gemini CLI 連携は比較実験として実装されています。ただし[Googleの公式FAQ](https://www.antigravity.google/docs/faq/)は、消費者向けプランで `agy` を外部アプリに組み込む方法をサポートしないと明記しています。**消費者向けAntigravityアカウントで、このアプリからの連続運用に使わないでください。**Googleの文字起こしが継続して必要なら、公式のGemini APIなどへ別途移行します。`--asr gemini` を選んだ場合は音声が Google 側へ送られ、CLI 側の会話履歴・保持はこのアプリの72時間／168時間削除の対象外です。自動フォールバックはありません。
@@ -67,17 +68,20 @@ agy models
 
 運営者が現地で録音を始めるときは、`inputs` に表示されたマイクの **UID** を指定します。以下の `<マイクUID>` は実際の値に置き換えます。区切りは既定で180秒です。録音を止めずに直前の区切りを処理するため、処理中の会話も次の区切りに入ります。約1分以内の処理を目標に現地MacBookで計測し、処理待ちが2区切りに達した場合は録音を安全に停止します。
 
-6時間ほどの運用では `--asr whisper` を第一候補として試します。Mac内で完結し、音声量に応じたAPI料金はかかりません。Appleはモデル準備が簡単で速い一方、実録音では語句の取り違えが目立ちました。Geminiは試した講演で読みやすい文字起こしでしたが、[利用枠と追加クレジット](https://www.antigravity.google/docs/plans)があり、上記の利用条件にも注意が必要です。1台のMac miniでの実測は、2分音源の文字起こしがApple約2秒・Whisper約13秒、3分音源のWhisper＋採用判断＋要約が約32秒でした。MacBookの時間は現地で確認します。
+6時間ほどの運用では既定の `verified` を第一候補として試します。Mac内で完結し、音声量に応じたAPI料金はかかりません。音声診断を通った区切りをWhisperで文字起こしし、Appleでもう一度読み、正規化した3文字列のJaccard一致度が0.30未満なら見送ります。短すぎる結果や、Whisperに反復・定型幻覚がある場合も見送ります。実録音3区間では、明瞭な講演0.63、談笑0.11、聞き取りにくい登壇0.14でした。この閾値は初期値で、現地録音を人が聞いて調整します。Whisperの認識確信度は誤認識でも高いことがあり、区間内VADは明瞭な講演の冒頭を欠落させたため、採用条件には使っていません。
+
+Apple単独は速い一方、実録音で語句の取り違えがありました。Whisper単独は照合を省く比較用です。Geminiは試した講演で読みやすい文字起こしでしたが、[利用枠と追加クレジット](https://www.antigravity.google/docs/plans)があり、上記の利用条件にも注意が必要です。Mac miniでの以前の実測は2分音源でApple約2秒・Whisper約13秒、3分音源のWhisper＋採用判断＋要約が約32秒でした。照合と根拠審査を加えた処理時間は現地MacBookでも確認します。
 
 ```bash
-.build/release/niho-mic run --input '<マイクUID>' --asr whisper
 .build/release/niho-mic run --input '<マイクUID>'
+.build/release/niho-mic run --input '<マイクUID>' --asr whisper
+.build/release/niho-mic run --input '<マイクUID>' --asr apple
 .build/release/niho-mic run --input '<マイクUID>' --segment-seconds 300 --asr whisper
 ```
 
 **Ctrl-C** で停止します。既に同意を得て録音した短い音声があれば、`once --audio '<ファイルの絶対パス>'` でも処理できます。実音声、文字起こし、短文ログはこの公開リポジトリへ追加しないでください。
 
-文字起こし前の音声判定だけを試すには次を使います。Mac標準のSound Analysisで発話らしさを判定し、発話候補が少ない場合や分類の確信度が低い場合に見送ります。音量だけでは雑音と発話を区別できないため、分類結果に秒数と割合のルールを適用します。発話判定は「言葉が正しく聞き取れる」保証ではなく、文字起こし後にも不明瞭な文章を見送ります。
+文字起こし前の音声判定だけを試すには次を使います。Mac標準のSound Analysisで発話らしさを判定し、発話候補が少ない場合や分類の確信度が低い場合に見送ります。音量だけでは雑音と発話を区別できないため、分類結果に秒数と割合のルールを適用します。発話判定は「言葉が正しく聞き取れる」保証ではありません。既定モードでは文字起こし後の照合、根拠の発言の抽出、Mac内AIによる要約の根拠確認も行います。
 
 ```bash
 .build/release/niho-mic audio-check --audio '<5分以内の音声>'
@@ -88,6 +92,7 @@ agy models
 ```bash
 .build/release/niho-mic transcribe --audio '<5分以内の音声>' --asr apple
 .build/release/niho-mic transcribe --audio '<5分以内の音声>' --asr whisper
+.build/release/niho-mic transcribe --audio '<5分以内の音声>' --asr verified
 .build/release/niho-mic transcribe --audio '<5分以内の音声>' --asr gemini
 ```
 
@@ -96,6 +101,7 @@ agy models
 ```bash
 .build/release/niho-mic review-audio --audio '<5分以内の音声>' --asr apple
 .build/release/niho-mic review-audio --audio '<5分以内の音声>' --asr whisper
+.build/release/niho-mic review-audio --audio '<5分以内の音声>'
 .build/release/niho-mic review-audio --audio '<5分以内の音声>' --asr gemini
 ```
 
@@ -121,7 +127,7 @@ open -e "$HOME/Documents/niho-mic-summary-prompt.txt"
 .build/release/niho-mic preview --segment '<inspectに表示された64桁の区切りID>' --selection-prompt-file "$HOME/Documents/niho-mic-selection-prompt.txt" --prompt-file "$HOME/Documents/niho-mic-summary-prompt.txt"
 ```
 
-`selection-prompt` は使用判定と話題選択、`prompt` は要約生成の指示です。最終の安全性確認の指示は同じ `LocalModels.swift` の `outputSafetyInstructions` にあります。候補の連絡先・詳しい住所・センシティブ内容・140字などの最終検査は `preview` でも有効です。編集するファイルには実際の会話や文字起こしを貼り付けず、公開リポジトリにも追加しないでください。
+`selection-prompt` は使用判定と話題選択、`prompt` は要約生成の指示です。要約生成は「話題: ...」と「本文: ...」の2行だけを受け付けます。以前に保存したプロンプトを使う場合もこの出力形式を指示してください。最終の安全性確認の指示は同じ `LocalModels.swift` の `outputSafetyInstructions` にあります。候補の連絡先・詳しい住所・センシティブ内容・140字などの最終検査は `preview` でも有効です。編集するファイルには実際の会話や文字起こしを貼り付けず、公開リポジトリにも追加しないでください。
 
 音声は72時間、文字起こしと要約候補の診断情報は168時間で削除します。稼働中と次回起動時に期限を確認します。停止中に期限が過ぎた場合は `.build/release/niho-mic prune` を実行できます。短文ログの削除は `.build/release/niho-mic delete-logs --confirm` です。
 

@@ -64,16 +64,41 @@ public enum SafetyPolicy {
         return nil
     }
 
+    /// Reject newly introduced concrete words before asking the local model about paraphrases.
+    /// This intentionally favors precision over recall when recognizers or the summary disagree.
+    public static func anchorsSupported(topic: String, summary: String, evidence: String) -> Bool {
+        let source = evidence.precomposedStringWithCompatibilityMapping.lowercased()
+        let candidate = (topic + " " + summary).precomposedStringWithCompatibilityMapping.lowercased()
+        let pattern = #"[一-龯]{2,}|[ァ-ヶー]{3,}|[a-z]{3,}|[0-9]+(?:\.[0-9]+)?"#
+        guard let regex = try? NSRegularExpression(pattern: pattern) else { return false }
+        let range = NSRange(candidate.startIndex..<candidate.endIndex, in: candidate)
+        for match in regex.matches(in: candidate, range: range) {
+            guard let tokenRange = Range(match.range, in: candidate) else { return false }
+            if !source.contains(candidate[tokenRange]) { return false }
+        }
+        return true
+    }
+
     public static func normalizeSummary(_ raw: String) -> String? {
-        // Reject runaway structured generation instead of hiding a large malformed tail.
-        guard raw.count <= 1000 else { return nil }
+        // A model may append only repeated closing tags after a completed sentence.
+        // Strip that inert suffix, but never hide any additional generated prose.
+        guard raw.count <= 4000 else { return nil }
+        if raw.count > 1000 {
+            guard let terminator = raw.range(of: "。」}"),
+                  raw[terminator.upperBound...].range(of: #"^\s*(?:</div>\s*)+$"#, options: .regularExpression) != nil else { return nil }
+        }
         var text = raw.trimmingCharacters(in: .whitespacesAndNewlines).precomposedStringWithCanonicalMapping
+        if text.hasSuffix("なんだって。なんだって。") { text.removeLast("なんだって。".count) }
+        for filler in ["今どんな話をしているよ。", "今こんな話をしているよ。", "こんな話をしているよ。"] where text.contains("。" + filler) {
+            text = text.replacingOccurrences(of: "。" + filler, with: "。")
+        }
         // A malformed structured response can put extra generation after an already closed text field.
         if let terminator = text.range(of: "。」}") {
             let tail = String(text[terminator.upperBound...])
-            guard tail.range(of: #"^(?:[」』}\]>\s]|<ctrl[0-9]+>)*$"#, options: .regularExpression) != nil else { return nil }
+            guard tail.range(of: #"^(?:[」』}\]>\s]|<ctrl[0-9]+>|</div>)*(?:```json```\{)?$"#, options: .regularExpression) != nil else { return nil }
             text = String(text[..<terminator.lowerBound]) + "。"
         }
+        guard text.count <= 1000 else { return nil }
         // FoundationModels sometimes appends an empty structured-output terminator after the final punctuation.
         if let period = text.lastIndex(of: "。"), period != text.index(before: text.endIndex) {
             let tail = String(text[text.index(after: period)...])
@@ -88,7 +113,7 @@ public enum SafetyPolicy {
               text.range(of: #"[ぁ-んァ-ヶ一-龯]"#, options: .regularExpression) != nil,
               ["なんだって。", "んだって。", "という話をしていたよ。", "と話していたよ。", "という話だ。", "ようだ。", "らしい。", "みたいだよ。", "よ。"].contains(where: text.hasSuffix),
               !isSensitive(text),
-              !["SKIP", "見送り", "不明", "話という話", "話題だったよ", "```", "<", ">", "{", "}", "■", "＊", "***", "[伏"].contains(where: text.contains)
+              !["SKIP", "見送り", "不明", "話という話", "話題だったよ", "今どんな話", "今こんな話", "こんな話をしている", "```", "<", ">", "{", "}", "■", "＊", "***", "[伏"].contains(where: text.contains)
         else { return nil }
         return text
     }
@@ -97,7 +122,7 @@ public enum SafetyPolicy {
         let text = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         if text.isEmpty { return "no_clear_topic" }
         if isSensitive(text) { return "sensitive_output" }
-        if ["話という話", "話題だった", "何かについて", "[伏", "SKIP", "見送り"].contains(where: text.contains) { return "vague_summary" }
+        if ["話という話", "話題だった", "何かについて", "今どんな話", "今こんな話", "こんな話をしている", "[伏", "SKIP", "見送り"].contains(where: text.contains) { return "vague_summary" }
         return "invalid_summary_format"
     }
 

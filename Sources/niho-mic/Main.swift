@@ -11,13 +11,13 @@ struct NihoMic {
     にほちゃんマイク v1 — macOS 26+ / Apple Silicon / 既定は Mac 内処理
 
     niho-mic inputs
-    niho-mic doctor [--input <機器UID>] [--asr apple|whisper|gemini]
+    niho-mic doctor [--input <機器UID>] [--asr verified|apple|whisper|gemini]
     niho-mic install-speech-model
-    niho-mic run --input <機器UID> [--segment-seconds <2〜300>] [--asr apple|whisper|gemini]
-    niho-mic once --audio <音声ファイル> [--asr apple|whisper|gemini]
+    niho-mic run --input <機器UID> [--segment-seconds <2〜300>] [--asr verified|apple|whisper|gemini]
+    niho-mic once --audio <音声ファイル> [--asr verified|apple|whisper|gemini]
     niho-mic audio-check --audio <音声ファイル>
-    niho-mic transcribe --audio <音声ファイル> [--asr apple|whisper|gemini]
-    niho-mic review-audio --audio <音声ファイル> [--asr apple|whisper|gemini] [--selection-prompt-file <ファイル>] [--prompt-file <ファイル>]
+    niho-mic transcribe --audio <音声ファイル> [--asr verified|apple|whisper|gemini]
+    niho-mic review-audio --audio <音声ファイル> [--asr verified|apple|whisper|gemini] [--selection-prompt-file <ファイル>] [--prompt-file <ファイル>]
     niho-mic inspect [--latest <1〜50>]
     niho-mic selection-prompt
     niho-mic prompt
@@ -29,7 +29,7 @@ struct NihoMic {
     録音は運営者が目的を説明し、参加者の同意を得てから手動で開始してください。
     run は既定180秒（指定可能範囲2〜300秒）で区切り、録音を続けながら直前の区切りを処理します。Ctrl-C で録音を止め、最後の区切りを処理します。
     無音・雑音をMac内で判定し、発話が足りない区切りは文字起こし前に見送ります。audio-check で判定だけ試せます。
-    文字起こしは既定 apple。--asr whisper は無料の Mac 内処理です。--asr gemini は比較実験用で音声を Google へ送ります。消費者向けAntigravityアカウントでの外部アプリ連携は公式FAQで非サポートです。自動切替はしません。
+    文字起こしの既定 verified はWhisperとAppleをMac内で照合し、食い違う区切りを見送ります。各エンジンも --asr で単独指定できます。--asr gemini は比較実験用で音声を Google へ送ります。消費者向けAntigravityアカウントでの外部アプリ連携は公式FAQで非サポートです。自動切替はしません。
     指定機器の切断、既定入力や入力設定の変更を検出すると停止します。
     once、transcribe、review-audio は2〜300秒の録音が対象です。元ファイルは変更しません。
     transcribe は要約・保存せず、生の文字起こしを端末に表示します。画面共有中は注意してください。
@@ -66,7 +66,7 @@ struct NihoMic {
     }
 
     static func selectedASR(_ flags: [String: String]) throws -> ASREngine {
-        guard let asr = ASREngine(rawValue: flags["--asr"] ?? "apple") else { throw MicError.invalidArguments }
+        guard let asr = ASREngine(rawValue: flags["--asr"] ?? "verified") else { throw MicError.invalidArguments }
         return asr
     }
 
@@ -193,12 +193,18 @@ struct NihoMic {
                     break
                 }
             }
-            let transcript = try await transcribe(source, asr: asr, store: store)
-            if command == "transcribe" { print(transcript); break }
-            let outcome = try await LocalModels.summarize(transcript, recent: [], id: PrivateStore.hash(source), endedAt: Date(),
+            let transcription = try await transcribe(source, asr: asr, store: store)
+            if command == "transcribe" { print(transcription.text); break }
+            if let agreement = transcription.agreement { print("文字起こし照合: \(String(format: "%.2f", agreement))") }
+            if let reason = transcription.reason {
+                let record = LocalRecord(segmentID: try PrivateStore.hash(source), audioEndedAt: Date(), decision: "skip", reason: reason)
+                printReview(transcript: transcription.text, record: record, trace: nil, preview: true)
+                break
+            }
+            let outcome = try await LocalModels.summarize(transcription.text, recent: [], id: PrivateStore.hash(source), endedAt: Date(),
                                                           summaryInstructions: readInstructions(flags["--prompt-file"]),
                                                           selectionInstructions: readInstructions(flags["--selection-prompt-file"]))
-            printReview(transcript: transcript, record: outcome.record, trace: outcome.trace, preview: true)
+            printReview(transcript: transcription.text, record: outcome.record, trace: outcome.trace, preview: true)
         case "run":
             let flags = try options(tail, allowed: ["--input", "--segment-seconds", "--asr"])
             guard let uid = flags["--input"] else { throw MicError.invalidArguments }
@@ -217,13 +223,14 @@ struct NihoMic {
         }
     }
 
-    static func transcribe(_ source: URL, asr: ASREngine, store: PrivateStore) async throws -> String {
+    static func transcribe(_ source: URL, asr: ASREngine, store: PrivateStore) async throws -> TranscriptionResult {
         switch asr {
+        case .verified: return try await VerifiedASR.transcribe(source, store: store)
         case .apple:
             guard try await LocalModels.speechStatus() == .installed else { throw MicError.japaneseModelMissing }
-            return try await LocalModels.transcribe(source)
-        case .whisper: return try await WhisperASR.transcribe(source, store: store)
-        case .gemini: return try await GeminiASR.transcribe(source, store: store)
+            return TranscriptionResult(text: try await LocalModels.transcribe(source))
+        case .whisper: return TranscriptionResult(text: try await WhisperASR.transcribe(source, store: store))
+        case .gemini: return TranscriptionResult(text: try await GeminiASR.transcribe(source, store: store))
         }
     }
 
@@ -241,11 +248,13 @@ struct NihoMic {
             print("2. 使用判定: \(decision == "use" ? "使用" : "見送り") / \(reasonDescription(reason)) [\(reason)]")
             if let topic = trace?.selectedTopic, !topic.isEmpty { print("   選んだ話題: \(topic)") }
             if let explanation = trace?.selectionExplanation, !explanation.isEmpty { print("   理由: \(explanation)") }
-        } else if ["audio_too_short", "no_speech", "insufficient_speech", "low_speech_confidence"].contains(record.reason) {
+            if let evidence = trace?.selectionEvidence, !evidence.isEmpty { print("   根拠の発言: \(evidence)") }
+        } else if ["audio_too_short", "no_speech", "insufficient_speech", "low_speech_confidence", "asr_second_opinion_short", "asr_disagreement", "unclear"].contains(record.reason) {
             print("2. 使用判定: 見送り / \(reasonDescription(record.reason)) [\(record.reason)]")
         } else { print("2. 使用判定: （旧版のため記録なし）") }
         let candidate = trace?.candidateText ?? ""
         print("3. 要約候補: \(candidate.isEmpty ? "（生成なし）" : candidate)")
+        if let topic = trace?.candidateTopic, !topic.isEmpty { print("   候補の話題名: \(topic)") }
         print("4. 最終チェック: \(record.decision == "publish" ? "採用" : "見送り") / \(reasonDescription(record.reason)) [\(record.reason)]")
         print("   最終短文: \(record.text.isEmpty ? "（なし）" : record.text)")
         print("5. 発信: \(preview ? "試行のみ・保存なし" : (record.decision == "publish" ? "Mac 内ログに記録済み" : "なし"))")
@@ -257,7 +266,12 @@ struct NihoMic {
         case "no_speech", "audio_too_short", "blank_or_short": return "発話がない、または短すぎる"
         case "insufficient_speech": return "発話と判定された時間が短い"
         case "low_speech_confidence": return "発話分類の確信度が低い"
+        case "asr_second_opinion_short": return "2種類目の文字起こしが短く、内容を確認できない"
+        case "asr_disagreement": return "Mac内の2種類の文字起こしが大きく食い違う"
         case "unclear", "no_clear_topic": return "話題を読み取れない"
+        case "evidence_not_in_transcript": return "選ばれた根拠の発言を文字起こしで確認できない"
+        case "unsupported_summary": return "短文の内容を根拠の発言で確認できない"
+        case "grounding_model_error": return "Mac内AIの根拠確認を完了できなかった"
         case "no_shareable_topic": return "理解できる共有価値のある話題を切り出せない"
         case "selection_model_error": return "Mac 内 AI の使用判定を完了できなかった"
         case "too_long_for_local_context": return "文字起こしが長すぎる"

@@ -1,6 +1,7 @@
 import Foundation
 
 public enum ASREngine: String, Sendable {
+    case verified
     case apple
     case whisper
     case gemini

@@ -29,6 +29,45 @@ final class CoreTests: XCTestCase {
         XCTAssertEqual(LocalModels.cleanGeneratedField("庭の落ち葉が乾燥を防ぐ。\"}```json{", limit: 120), "庭の落ち葉が乾燥を防ぐ。")
     }
 
+    func testPlainDraftParsingRejectsExtraContent() {
+        let parsed = LocalModels.parseDraft("『話題: 土地の色』\n『土地の色は自然や歴史が重なるんだって。』")
+        XCTAssertEqual(parsed?.topic, "土地の色")
+        XCTAssertEqual(parsed?.text, "土地の色は自然や歴史が重なるんだって。")
+        XCTAssertEqual(LocalModels.parseDraft("話題: 土地の色\n本文: 土地の色の話をしているよ。")?.text, "土地の色の話をしているよ。")
+        XCTAssertNil(LocalModels.parseDraft("話題: 土地の色\n本文: 土地の色の話。\n秘密: 追加内容"))
+    }
+
+    func testGroundingAnchorsRejectUnsupportedNamesAndNumbers() {
+        let evidence = "土地の色は自然や歴史、食の重なりで作られると話していました。"
+        XCTAssertTrue(SafetyPolicy.anchorsSupported(topic: "土地の色", summary: "土地の色は自然や歴史の重なりで作られるんだって。", evidence: evidence))
+        XCTAssertFalse(SafetyPolicy.anchorsSupported(topic: "三浦半島の色", summary: "三浦半島の色は自然や歴史の重なりで作られるんだって。", evidence: evidence))
+        XCTAssertFalse(SafetyPolicy.anchorsSupported(topic: "土地の色", summary: "土地の色は10種類あるんだって。", evidence: evidence))
+    }
+
+    func testVerifiedASRRequiresIndependentAgreement() {
+        let clear = "土地の色は自然と歴史と暮らしが重なって生まれる。観光はその土地の色を見に行くことだと話した。山や海の地形や風土も、その土地を特徴づける自然の色として紹介されていた。"
+        let second = "土地の色は、自然・歴史・暮らしが重なって生まれる。観光はその土地の色を見に行くことだと話している。山や海の地形や風土も、その土地を特徴づける自然の色として紹介された。"
+        let accepted = VerifiedASR.compare(primary: clear, second: second)
+        XCTAssertNil(accepted.reason)
+        XCTAssertGreaterThan(accepted.agreement ?? 0, 0.30)
+        let unrelated = "庭ではシダを育てるために日陰と水やりを工夫する。土の表面が乾いたら鉢底から水が出るまで注ぐ。"
+        XCTAssertEqual(VerifiedASR.compare(primary: clear, second: unrelated).reason, "asr_disagreement")
+        XCTAssertEqual(VerifiedASR.compare(primary: clear, second: "はい").reason, "asr_second_opinion_short")
+        let repeated = "庭ではシダについて話す。" + String(repeating: "ありがとうございました。", count: 12)
+        XCTAssertEqual(VerifiedASR.compare(primary: repeated, second: clear).reason, "unclear")
+    }
+
+    func testSelectionEvidenceMustBeCopiedFromTranscript() {
+        let source = "西御門の谷戸は縄文時代から続いているという話をしていました。鎌倉時代には別の使われ方をしたそうです。"
+        XCTAssertTrue(LocalModels.evidenceIsInTranscript("西御門の谷戸は縄文時代から続いているという話をしていました。", transcript: source))
+        XCTAssertEqual(EvidenceMatcher.excerpt("西御門の谷戸は弥生時代から続いているという話をしていました。", from: source),
+                       "西御門の谷戸は縄文時代から続いているという話をしていました")
+        XCTAssertFalse(LocalModels.evidenceIsInTranscript("鎌倉駅前の建築物は現代に建てられ、白い壁が特徴だそうです。", transcript: source))
+        XCTAssertFalse(LocalModels.evidenceIsInTranscript("西御門の谷戸", transcript: source))
+        XCTAssertEqual(EvidenceMatcher.excerpt("鎌倉のこの地域については自然と歴史の重なりが", from: "土地の話です。鎌倉のこの地域については自然と歴史の重なりが\nその土地の色を作ると話していました。"),
+                       "鎌倉のこの地域については自然と歴史の重なりが\nその土地の色を作ると話していました。")
+    }
+
     func testSensitiveWholeWindow() {
         for text in ["来週、Aさんが病院へ行く", "政治の話と日陰の植物の育て方", "連絡は sample@example.com です", "電話 090-1234-5678", "神奈川県の三丁目という住所", "家族で旅行に行った話", "未成年者についての話", "今いる人数は三人です", "hello https://example.com", "お金の相談です", "田中さんが鎌倉に住んでいる話"] {
             XCTAssertTrue(SafetyPolicy.isSensitive(text), "synthetic sensitive fixture was accepted")
@@ -63,6 +102,11 @@ final class CoreTests: XCTestCase {
         XCTAssertEqual(SafetyPolicy.normalizeSummary(" \n" + text + "\n "), text)
         XCTAssertEqual(SafetyPolicy.normalizeSummary(text + "」}<ctrl46>"), text)
         XCTAssertEqual(SafetyPolicy.normalizeSummary(text + "」}<ctrl46>}"), text)
+        XCTAssertEqual(SafetyPolicy.normalizeSummary(text + "」}" + String(repeating: " </div>", count: 150)), text)
+        XCTAssertEqual(SafetyPolicy.normalizeSummary(text + "」}```json```{"), text)
+        XCTAssertEqual(SafetyPolicy.normalizeSummary("土地の色は自然と歴史の重なりなんだって。なんだって。"), "土地の色は自然と歴史の重なりなんだって。")
+        XCTAssertEqual(SafetyPolicy.normalizeSummary("土地の色は自然と歴史の重なりなんだって。今どんな話をしているよ。"), "土地の色は自然と歴史の重なりなんだって。")
+        XCTAssertNil(SafetyPolicy.normalizeSummary("今どんな話をしているよ。"))
         XCTAssertNil(SafetyPolicy.normalizeSummary(text + "」} 文の外に続く壊れた出力。"))
         XCTAssertNil(SafetyPolicy.normalizeSummary(text + "」}" + String(repeating: "<ctrl46>", count: 150)))
         XCTAssertEqual(SafetyPolicy.normalizeSummary("庭ではシダが育つんだって。"), "庭ではシダが育つんだって。")
@@ -114,6 +158,7 @@ final class CoreTests: XCTestCase {
         let trace = try JSONDecoder().decode(ReviewTrace.self, from: Data(old.utf8))
         XCTAssertNil(trace.selectionDecision)
         XCTAssertNil(trace.selectedTopic)
+        XCTAssertNil(trace.selectionEvidence)
         XCTAssertEqual(trace.candidateTopic, "庭")
     }
 
@@ -229,6 +274,10 @@ final class CoreTests: XCTestCase {
         XCTAssertEqual(AudioGateResult(duration: 180, candidateSpeech: 0).reason, "insufficient_speech")
         XCTAssertEqual(AudioGateResult(duration: 180, candidateSpeech: 30, speech: 8,
                                        confidentSpeech: 1).reason, "low_speech_confidence")
+        XCTAssertEqual(AudioGateResult(duration: 180, candidateSpeech: 162, speech: 110,
+                                       confidentSpeech: 78).reason, "low_speech_confidence")
+        XCTAssertEqual(AudioGateResult(duration: 180, candidateSpeech: 177, speech: 150,
+                                       confidentSpeech: 132).reason, "ok")
         XCTAssertEqual(AudioGateResult(duration: 180, candidateSpeech: 9, speech: 8,
                                        confidentSpeech: 6).reason, "ok")
         XCTAssertEqual(AudioGateResult(duration: 180, candidateSpeech: 120, speech: 95,

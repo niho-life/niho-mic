@@ -37,6 +37,7 @@ final class CoreTests: XCTestCase {
         XCTAssertEqual(SafetyPolicy.normalizeSummary(text + "」}<ctrl46>"), text)
         XCTAssertEqual(SafetyPolicy.normalizeSummary(text + "」}<ctrl46>}"), text)
         XCTAssertEqual(SafetyPolicy.normalizeSummary(text + "」} 文の外に続く壊れた出力。"), text)
+        XCTAssertNil(SafetyPolicy.normalizeSummary(text + "」}" + String(repeating: "<ctrl46>", count: 150)))
         XCTAssertEqual(SafetyPolicy.normalizeSummary("庭ではシダが育つんだって。"), "庭ではシダが育つんだって。")
         XCTAssertEqual(SafetyPolicy.normalizeSummary("日陰の庭でシダが育つという話だ。"), "日陰の庭でシダが育つという話だ。")
         XCTAssertEqual(SafetyPolicy.normalizeSummary("日陰の庭ではシダが育つようだ。"), "日陰の庭ではシダが育つようだ。")
@@ -150,6 +151,8 @@ final class CoreTests: XCTestCase {
             let id = try PrivateStore.hash(source)
             XCTAssertEqual(id.count, 64)
             _ = try store.archive(source, id: id)
+            // Whisper's interrupted conversion must never be resumed as a recording.
+            try Data("synthetic scratch".utf8).write(to: store.audioDirectory.appendingPathComponent("whisper-scratch.wav"))
             XCTAssertEqual(try store.pendingAudio().count, 1)
             try store.append(LocalRecord(segmentID: id, audioEndedAt: Date(), decision: "skip", reason: "no_speech"))
             XCTAssertTrue(try store.pendingAudio().isEmpty)

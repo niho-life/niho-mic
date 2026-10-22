@@ -4,7 +4,7 @@ NIHO 鎌倉で交わされている話の要点を、連絡先や詳しい住所
 
 ## 現在の範囲（v1）
 
-- 運営者が指定したマイクから録音し、macOS の SpeechTranscriber で Mac 内文字起こしする。
+- 運営者が指定したマイクから録音し、macOS の SpeechTranscriber（既定）またはローカルの Whisper を選んで Mac 内文字起こしする。
 - Mac 内の AI で「その場の様子が伝わるか、後で役に立つか」を判定して話題を選び、日本語 140 文字以内の場の共有または伝聞の短文を Mac に保存する。
 - 音声は 72 時間、生の文字起こしは 168 時間保持した後に削除する。
 - NIHOappへの投稿、クラウド文字起こし、自動起動はまだ行わない。
@@ -36,14 +36,39 @@ Bluetooth マイクを macOS に接続し、**システム設定 → サウン�
 .build/release/niho-mic doctor
 ```
 
+Whisper を使う場合は、MacBook 側でも次を一度実行します。`whisper.cpp` は無料で、モデルは Mac 内に保存します。約 550 MB のダウンロードが必要です。取得後は `doctor --asr whisper` で確認できます。
+
+```bash
+brew install whisper-cpp
+umask 077
+model_dir="$HOME/Library/Application Support/life.niho.mic/models"
+mkdir -p "$model_dir"
+curl --fail --location --retry 3 \
+  'https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-turbo-q5_0.bin' \
+  --output "$model_dir/ggml-large-v3-turbo-q5_0.bin.partial"
+printf '%s  %s\n' \
+  '394221709cd5ad1f40c46e6031ca61bce88931e6e088c188294c6d5a55ffa7e2' \
+  "$model_dir/ggml-large-v3-turbo-q5_0.bin.partial" | shasum -a 256 -c - && \
+  mv "$model_dir/ggml-large-v3-turbo-q5_0.bin.partial" "$model_dir/ggml-large-v3-turbo-q5_0.bin"
+.build/release/niho-mic doctor --asr whisper
+```
+
 運営者が現地で録音を始めるときは、`inputs` に表示されたマイクの **UID** を指定します。以下の `<マイクUID>` は実際の値に置き換えます。区切りは既定で120秒です。初回は認識精度と短文までの時間を確認してください。5分区切りで試す場合は、二つ目のコマンドを使います。
 
 ```bash
 .build/release/niho-mic run --input '<マイクUID>'
 .build/release/niho-mic run --input '<マイクUID>' --segment-seconds 300
+.build/release/niho-mic run --input '<マイクUID>' --asr whisper
 ```
 
 **Ctrl-C** で停止します。既に同意を得て録音した短い音声があれば、`once --audio '<ファイルの絶対パス>'` でも処理できます。実音声、文字起こし、短文ログはこの公開リポジトリへ追加しないでください。
+
+同じ音声の文字起こしだけを比較するときは、次を使います。`transcribe` は要約やログへの記録をせず、端末へ生の文字起こしを表示します。`once` と `run` は保存済み音声の重複処理を避けるため、同じファイルでエンジンを比較する用途には使えません。
+
+```bash
+.build/release/niho-mic transcribe --audio '<5分以内の音声>' --asr apple
+.build/release/niho-mic transcribe --audio '<5分以内の音声>' --asr whisper
+```
 
 採用した短文は `~/Library/Application Support/life.niho.mic/logs/YYYY-MM-DD.jsonl` に記録されます。自分のMac上で見る場合の例:
 

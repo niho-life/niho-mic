@@ -173,7 +173,7 @@ public final class PrivateStore {
     public func pendingAudio() throws -> [URL] {
         let completed = Set(try records().map(\.segmentID))
         return try manager.contentsOfDirectory(at: audioDirectory, includingPropertiesForKeys: nil).filter {
-            !completed.contains($0.deletingPathExtension().lastPathComponent)
+            $0.pathExtension == "caf" && !completed.contains($0.deletingPathExtension().lastPathComponent)
         }
     }
 

@@ -41,7 +41,7 @@ public enum WhisperASR {
         try store.secure(wave)
         try await run(executable, ["-m", modelURL(root: store.root).path, "-l", "ja", "-otxt", "-of", outputBase.path, wave.path])
         try store.secure(output)
-        guard let text = try? String(contentsOf: output, encoding: .utf8).trimmingCharacters(in: .whitespacesAndNewlines), !text.isEmpty else {
+        guard let text = try? String(contentsOf: output, encoding: .utf8).trimmingCharacters(in: .whitespacesAndNewlines) else {
             throw MicError.transcriptionFailed
         }
         return text

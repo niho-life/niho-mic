@@ -18,6 +18,7 @@ struct NihoMic {
     niho-mic audio-check --audio <音声ファイル>
     niho-mic transcribe --audio <音声ファイル> [--asr verified|apple|whisper|gemini]
     niho-mic review-audio --audio <音声ファイル> [--asr verified|apple|whisper|gemini] [--selection-prompt-file <ファイル>] [--prompt-file <ファイル>]
+    niho-mic review-text --transcript-file <文字起こしファイル> [--selection-prompt-file <ファイル>] [--prompt-file <ファイル>]
     niho-mic inspect [--latest <1〜50>]
     niho-mic selection-prompt
     niho-mic prompt
@@ -34,6 +35,7 @@ struct NihoMic {
     once、transcribe、review-audio は2〜300秒の録音が対象です。元ファイルは変更しません。
     transcribe は要約・保存せず、生の文字起こしを端末に表示します。画面共有中は注意してください。
     review-audio は同じ音声で文字起こし・採用判断・投稿案を試し、端末に表示します。記録は変更しません。
+    review-text は保存済みの文字起こしテキストから採用判断・投稿案だけを試します。記録は変更しません。
     保存先: ~/Library/Application Support/life.niho.mic (0700 / ファイル0600)
     音声72時間、文字起こし168時間。起動時と稼働中に期限切れを削除します。
     停止中は削除されないため、再起動時または prune で削除してください。
@@ -143,6 +145,18 @@ struct NihoMic {
             try await LocalModels.requireReady()
             let outcome = try await LocalModels.summarize(transcript, recent: [], id: id, endedAt: record.audioEndedAt,
                                                           summaryInstructions: summaryInstructions, selectionInstructions: selectionInstructions)
+            printReview(transcript: transcript, record: outcome.record, trace: outcome.trace, preview: true)
+        case "review-text":
+            let flags = try options(tail, allowed: ["--transcript-file", "--prompt-file", "--selection-prompt-file"])
+            guard let path = flags["--transcript-file"] else { throw MicError.invalidArguments }
+            let file = URL(fileURLWithPath: (path as NSString).expandingTildeInPath)
+            let attributes = try FileManager.default.attributesOfItem(atPath: file.path)
+            guard let bytes = attributes[.size] as? NSNumber, bytes.intValue <= 64_000,
+                  let transcript = String(data: try Data(contentsOf: file), encoding: .utf8) else { throw MicError.invalidArguments }
+            try LocalModels.requireSummaryReady()
+            let outcome = try await LocalModels.summarize(transcript, recent: [], id: String(repeating: "0", count: 64), endedAt: Date(),
+                                                          summaryInstructions: readInstructions(flags["--prompt-file"]),
+                                                          selectionInstructions: readInstructions(flags["--selection-prompt-file"]))
             printReview(transcript: transcript, record: outcome.record, trace: outcome.trace, preview: true)
         case "delete-logs":
             guard tail == ["--confirm"] else { throw MicError.invalidArguments }
@@ -271,6 +285,7 @@ struct NihoMic {
         case "unclear", "no_clear_topic": return "話題を読み取れない"
         case "evidence_not_in_transcript": return "選ばれた根拠の発言を文字起こしで確認できない"
         case "unsupported_summary": return "短文の内容を根拠の発言で確認できない"
+        case "insufficient_detail": return "根拠にある内容から80字以上の具体的な短文を作れない"
         case "grounding_model_error": return "Mac内AIの根拠確認を完了できなかった"
         case "no_shareable_topic": return "理解できる共有価値のある話題を切り出せない"
         case "selection_model_error": return "Mac 内 AI の使用判定を完了できなかった"

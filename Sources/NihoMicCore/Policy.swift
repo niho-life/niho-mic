@@ -67,16 +67,22 @@ public enum SafetyPolicy {
     /// Reject newly introduced concrete words before asking the local model about paraphrases.
     /// This intentionally favors precision over recall when recognizers or the summary disagree.
     public static func anchorsSupported(topic: String, summary: String, evidence: String) -> Bool {
+        unsupportedAnchors(topic: topic, summary: summary, evidence: evidence).isEmpty
+    }
+
+    public static func unsupportedAnchors(topic: String, summary: String, evidence: String) -> [String] {
         let source = evidence.precomposedStringWithCompatibilityMapping.lowercased()
         let candidate = (topic + " " + summary).precomposedStringWithCompatibilityMapping.lowercased()
         let pattern = #"[一-龯]{2,}|[ァ-ヶー]{3,}|[a-z]{3,}|[0-9]+(?:\.[0-9]+)?"#
-        guard let regex = try? NSRegularExpression(pattern: pattern) else { return false }
+        guard let regex = try? NSRegularExpression(pattern: pattern) else { return ["invalid_pattern"] }
         let range = NSRange(candidate.startIndex..<candidate.endIndex, in: candidate)
+        var unsupported: [String] = []
         for match in regex.matches(in: candidate, range: range) {
-            guard let tokenRange = Range(match.range, in: candidate) else { return false }
-            if !source.contains(candidate[tokenRange]) { return false }
+            guard let tokenRange = Range(match.range, in: candidate) else { return ["invalid_match"] }
+            let token = String(candidate[tokenRange])
+            if !source.contains(token), !unsupported.contains(token) { unsupported.append(token) }
         }
-        return true
+        return unsupported
     }
 
     public static func normalizeSummary(_ raw: String) -> String? {

@@ -44,6 +44,28 @@ final class CoreTests: XCTestCase {
         XCTAssertFalse(SafetyPolicy.anchorsSupported(topic: "土地の色", summary: "土地の色は10種類あるんだって。", evidence: evidence))
     }
 
+    func testSpeakerAttributionRequiresCopiedIntroduction() {
+        let transcript = "今日は松本さんも来ています。私は代表理事を務めております。土地の色についてお話しします。"
+        XCTAssertEqual(LocalModels.verifiedSpeaker(label: "代表理事", evidence: "私は代表理事を務めております。", transcript: transcript)?.label, "代表理事")
+        XCTAssertNil(LocalModels.verifiedSpeaker(label: "田中さん", evidence: "田中さんが話します。", transcript: transcript))
+        XCTAssertNil(LocalModels.verifiedSpeaker(label: "松本さん", evidence: "今日は松本さんも来ています。", transcript: transcript))
+        XCTAssertEqual(LocalModels.selfIntroducedSpeaker(in: "ここで今代表理事を務めております\n土地の話をします")?.label, "代表理事")
+        XCTAssertEqual(LocalModels.selfIntroducedSpeaker(in: "松本と申します。\n庭の話をします")?.label, "松本")
+        XCTAssertNil(LocalModels.selfIntroducedSpeaker(in: "今日は松本さんも来ています。\n庭の話をします"))
+    }
+
+    func testExtractiveListSummaryNeedsAnExplicitRelation() {
+        let evidence = "庭の色は\n石垣 苔庭 雨水 木々 落葉 日陰 砂利 草花みたいなのですね\nそれらの重なりが庭の色を作ると思います"
+        let summary = LocalModels.listSummary(topic: "庭の色", evidence: evidence, speaker: "松本さん")
+        XCTAssertNotNil(summary)
+        XCTAssertTrue(summary?.contains("石垣、苔庭、雨水、木々、落葉、日陰、砂利、草花") == true)
+        XCTAssertTrue(summary?.hasPrefix("松本さんが") == true)
+        XCTAssertTrue((80...140).contains(summary?.count ?? 0))
+        XCTAssertNil(LocalModels.listSummary(topic: "庭の色", evidence: "石 苔 水 木 花 草 砂 光みたいなのですね", speaker: nil))
+        XCTAssertNil(LocalModels.listSummary(topic: "山の色", evidence: evidence, speaker: nil))
+        XCTAssertNil(LocalModels.listSummary(topic: "庭の色", evidence: "重なりで庭の色を作る\n石垣 苔庭 雨水 木々 落葉 日陰 砂利 草花", speaker: nil))
+    }
+
     func testVerifiedASRRequiresIndependentAgreement() {
         let clear = "土地の色は自然と歴史と暮らしが重なって生まれる。観光はその土地の色を見に行くことだと話した。山や海の地形や風土も、その土地を特徴づける自然の色として紹介されていた。"
         let second = "土地の色は、自然・歴史・暮らしが重なって生まれる。観光はその土地の色を見に行くことだと話している。山や海の地形や風土も、その土地を特徴づける自然の色として紹介された。"

@@ -202,6 +202,9 @@ final class CoreTests: XCTestCase {
         XCTAssertEqual(SafetyPolicy.transcriptRejection(String(repeating: "庭", count: 6001)), "too_long_for_local_context")
         XCTAssertNil(SafetyPolicy.transcriptRejection("庭のシダの育て方を話しました。途中で松本さんの家族についても短く話しました。"))
         XCTAssertEqual(SafetyPolicy.transcriptRejection("地域の課題について話している。本田県の補正などの補正などの補正などの補正などの補正などの会議です。"), "unclear")
+        let conversation = "鎌倉市の指定管理では市民活動センターの運営を団体が担い、その団体がスタッフを雇用して地域の活動を支えているという話を聞きました。"
+        XCTAssertNil(SafetyPolicy.transcriptRejection(conversation + String(repeating: "\nお疲れ様でした", count: 4)))
+        XCTAssertEqual(SafetyPolicy.transcriptRejection(String(repeating: "お疲れ様でした", count: 4)), "unclear")
     }
 
     func testSummaryNormalizationDoesNotTruncate() {

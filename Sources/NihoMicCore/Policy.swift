@@ -59,7 +59,17 @@ public enum SafetyPolicy {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         if trimmed.count < 20 { return "blank_or_short" }
         if trimmed.count > 6000 { return "too_long_for_local_context" }
-        if containsUnclearSpeech(trimmed) { return "unclear" }
+        let unclearMarkers = ["聞き取れ", "不明瞭", "判別不能", "ご視聴ありがとうございました", "字幕"]
+        if unclearMarkers.contains(where: trimmed.contains) { return "unclear" }
+        // ASR can repeat a farewell at the end of an otherwise useful conversation.
+        // Reject repetition only when it dominates the transcript or leaves too little content.
+        let compact = trimmed.replacingOccurrences(of: #"\s+"#, with: "", options: .regularExpression)
+        if let repetition = try? NSRegularExpression(pattern: #"(.{4,24})\1{3,}"#) {
+            let matches = repetition.matches(in: compact, range: NSRange(compact.startIndex..<compact.endIndex, in: compact))
+            let repeatedUnits = matches.reduce(0) { $0 + $1.range.length - $1.range(at: 1).length }
+            let remainingUnits = compact.utf16.count - repeatedUnits
+            if repeatedUnits > 0 && (remainingUnits < 40 || repeatedUnits >= remainingUnits) { return "unclear" }
+        }
         return nil
     }
 

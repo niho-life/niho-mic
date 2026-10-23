@@ -478,7 +478,16 @@ public enum LocalModels {
 
     public static func transcribe(_ url: URL) async throws -> String {
         let transcriber = try await transcriber()
-        guard await AssetInventory.status(forModules: [transcriber]) == .installed else { throw MicError.japaneseModelMissing }
+        if await AssetInventory.status(forModules: [transcriber]) != .installed {
+            // The system can briefly report an asset as unavailable during a long run.
+            // Recheck before requesting it again; a previously downloaded asset is reused.
+            try await Task.sleep(for: .milliseconds(500))
+            if await AssetInventory.status(forModules: [transcriber]) != .installed {
+                print("日本語音声モデルの状態が変わったため、利用可能な状態へ復旧します。")
+                try await installSpeech()
+            }
+            guard await AssetInventory.status(forModules: [transcriber]) == .installed else { throw MicError.japaneseModelMissing }
+        }
         do {
             let file = try AVAudioFile(forReading: url)
             let analyzer = SpeechAnalyzer(modules: [transcriber])

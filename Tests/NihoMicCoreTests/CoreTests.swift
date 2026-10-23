@@ -122,6 +122,8 @@ final class CoreTests: XCTestCase {
         XCTAssertNil(SafetyPolicy.transcriptRejection(namedSpeaker))
         XCTAssertFalse(SafetyPolicy.isSensitive("松本さんが谷戸を説明したんだって。"))
         XCTAssertFalse(SafetyPolicy.isSensitive("林さんが庭を説明したんだって。"))
+        XCTAssertFalse(SafetyPolicy.isSensitive("桜寺の住職・松本さんが寺の観光について話していたよ。"))
+        XCTAssertTrue(SafetyPolicy.isSensitive("松本さん個人の信仰について話していたよ。"))
         XCTAssertEqual(SafetyPolicy.normalizeSummary("松本さんは千葉出身のデザイナーなんだって。"), "松本さんは千葉出身のデザイナーなんだって。")
         XCTAssertNil(SafetyPolicy.transcriptRejection("松本さんの家族について話しています。庭の話もしました。"))
         XCTAssertNil(SafetyPolicy.normalizeSummary("松本さんの家族が庭で話したなんだって。"))

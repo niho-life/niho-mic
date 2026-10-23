@@ -92,19 +92,27 @@ public final class WindowRecorder: @unchecked Sendable {
 
     public func verify() throws {
         if mutex.withLock({ inputInvalidated }) { throw MicError.inputChanged }
-        guard try AudioInputs.selected(selected.uid).id == selected.id,
-              try AudioInputs.defaultInput() == initialDefault,
-              let unit = engine.inputNode.audioUnit else { fail(); throw MicError.inputChanged }
-        var id: AudioDeviceID = 0, size = UInt32(MemoryLayout<AudioDeviceID>.size)
-        guard AudioUnitGetProperty(unit, kAudioOutputUnitProperty_CurrentDevice, kAudioUnitScope_Global, 0, &id, &size) == noErr,
-              id == selected.id else { fail(); throw MicError.inputChanged }
+        guard routeMatches(), (!tapped || engine.isRunning) else { fail(); throw MicError.inputChanged }
         mutex.lock(); let error = failed; mutex.unlock()
         if error { throw MicError.recordingFailed }
+    }
+
+    private func routeMatches() -> Bool {
+        guard (try? AudioInputs.selected(selected.uid).id) == selected.id,
+              (try? AudioInputs.defaultInput()) == initialDefault,
+              let unit = engine.inputNode.audioUnit else { return false }
+        var id: AudioDeviceID = 0, size = UInt32(MemoryLayout<AudioDeviceID>.size)
+        return AudioUnitGetProperty(unit, kAudioOutputUnitProperty_CurrentDevice,
+                                    kAudioUnitScope_Global, 0, &id, &size) == noErr && id == selected.id
     }
 
     private func fail() { mutex.lock(); accepting = false; mutex.unlock() }
 
     private func invalidateInput() {
+        // CoreAudio may announce a configuration refresh without changing devices.
+        // Query only CoreAudio here; AVAudioEngine is checked on the recorder loop.
+        guard (try? AudioInputs.selected(selected.uid).id) != selected.id ||
+              (try? AudioInputs.defaultInput()) != initialDefault else { return }
         mutex.withLock { inputInvalidated = true; accepting = false }
     }
 

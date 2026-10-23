@@ -287,7 +287,6 @@ struct NihoMic {
         switch asr {
         case .verified: return try await VerifiedASR.transcribe(source, store: store)
         case .apple:
-            guard try await LocalModels.speechStatus() == .installed else { throw MicError.japaneseModelMissing }
             return TranscriptionResult(text: try await LocalModels.transcribe(source))
         case .whisper: return TranscriptionResult(text: try await WhisperASR.transcribe(source, store: store))
         case .gemini: return TranscriptionResult(text: try await GeminiASR.transcribe(source, store: store))

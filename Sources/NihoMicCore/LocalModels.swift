@@ -469,7 +469,9 @@ public enum LocalModels {
 
     public static func installSpeech() async throws {
         let transcriber = try await transcriber()
-        guard try await AssetInventory.reserve(locale: Locale(identifier: "ja-JP")) else { throw MicError.japaneseModelMissing }
+        if await AssetInventory.status(forModules: [transcriber]) == .installed { return }
+        // The installation request reserves the module's locale when needed. A false
+        // result from reserve(locale:) means "already reserved", not "unavailable".
         if let request = try await AssetInventory.assetInstallationRequest(supporting: [transcriber]) { try await request.downloadAndInstall() }
         guard await AssetInventory.status(forModules: [transcriber]) == .installed else { throw MicError.japaneseModelMissing }
     }

@@ -114,7 +114,7 @@ struct NihoMic {
             try await LocalModels.requireReady(asr: asr, store: store)
         case "install-speech-model":
             guard tail.isEmpty else { throw MicError.invalidArguments }
-            print("日本語音声モデルの取得を開始します。")
+            print("日本語音声モデルを確認し、必要なら取得します。")
             try await LocalModels.installSpeech()
             print("日本語音声モデル: installed")
         case "prune":

@@ -27,11 +27,12 @@ public enum VerifiedASR {
     public static func compareForSummary(whisper: String, apple: String) -> TranscriptionResult {
         let comparison = compare(primary: whisper, second: apple)
         guard comparison.reason == nil,
+              (comparison.agreement ?? 0) >= 0.60,
               SafetyPolicy.transcriptRejection(apple) == nil,
               !whisper.contains("。"), apple.contains("。"),
               normalized(apple).count >= normalized(whisper).count * 3 / 5 else { return comparison }
-        // Whisper remains the independent check. Apple's sentence boundaries make the
-        // agreed speech usable by the topic and exact-quote stages.
+        // Use Apple's sentence boundaries only when the recognizers closely agree.
+        // A marginal match can preserve the topic while changing important words.
         return TranscriptionResult(text: apple, agreement: comparison.agreement)
     }
 

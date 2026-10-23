@@ -210,11 +210,19 @@ public final class PrivateStore {
         for record in records where record.segmentID != id
             && (record.speechEndedAt ?? record.audioEndedAt) <= endedAt
             && (record.speechEndedAt ?? record.audioEndedAt) >= start {
-            guard let trace = try reviewTrace(id: record.segmentID),
-                  let summary = trace.internalSummary, !summary.isEmpty,
-                  let topic = trace.internalTopic, !topic.isEmpty else { continue }
+            let trace = try reviewTrace(id: record.segmentID)
+            let memoSummary = trace?.internalSummary ?? ""
+            let memoTopic = trace?.internalTopic ?? ""
+            let summary: String
+            let topic: String
+            if !memoSummary.isEmpty && !memoTopic.isEmpty {
+                summary = memoSummary; topic = memoTopic
+            } else if record.decision == "publish", !record.text.isEmpty,
+                      !record.topicKey.isEmpty {
+                summary = record.text; topic = record.topicKey
+            } else { continue }
             let citation: TopicCitation?
-            if let sourceID = trace.topicSourceSegmentID, let source = trace.topicSourceEvidence,
+            if let sourceID = trace?.topicSourceSegmentID, let source = trace?.topicSourceEvidence,
                sourceID.range(of: #"^[a-f0-9]{64}$"#, options: .regularExpression) != nil,
                sessionSegmentIDs.contains(sourceID),
                source.contains(topic), source.count <= 240,

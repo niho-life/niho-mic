@@ -4,7 +4,7 @@ public enum MicError: String, Error, LocalizedError {
     case invalidArguments, unsupportedPlatform, speechUnavailable, japaneseModelMissing
     case intelligenceUnavailable, japaneseUnsupported, microphoneDenied, inputUnavailable
     case inputChanged, recordingFailed, transcriptionFailed, generationFailed
-    case whisperUnavailable, whisperModelMissing
+    case whisperUnavailable, whisperModelMissing, localBodyModelUnavailable
     case geminiUnavailable, geminiRunFailed, geminiPermissionDenied, geminiUnexpectedTool
     case unsafeStorage, storageBusy, invalidAudio, audioTooLong, audioAnalysisFailed, corruptLog
     public var errorDescription: String? {
@@ -26,6 +26,7 @@ public enum MicError: String, Error, LocalizedError {
         case .geminiPermissionDenied: "Gemini CLI が追加の操作権限を要求し、ヘッドレス実行で拒否されました。音声は採用しません。"
         case .geminiUnexpectedTool: "Gemini CLI が指定音声以外の操作を要求しました。音声は採用しません。"
         case .whisperModelMissing: "Whisper の日本語対応モデルが未準備です。README のモデル取得手順を実行してください。"
+        case .localBodyModelUnavailable: "指定された Mac 内の投稿文モデルに接続できません。Ollama を起動し、選択したモデルを取得してから再実行してください。"
         case .generationFailed: "Mac 内の要約処理に失敗しました。内容は診断ログへ出力しません。"
         case .unsafeStorage: "専用保存先の安全性または権限を確認できません。"
         case .storageBusy: "別の niho-mic が同じ保存先を使用しています。"
@@ -58,14 +59,18 @@ public enum SafetyPolicy {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         if trimmed.count < 20 { return "blank_or_short" }
         if trimmed.count > 6000 { return "too_long_for_local_context" }
-        if ["聞き取れ", "不明瞭", "判別不能", "ご視聴ありがとうございました", "字幕"].contains(where: trimmed.contains) { return "unclear" }
-        let compact = trimmed.replacingOccurrences(of: #"\s+"#, with: "", options: .regularExpression)
-        if compact.range(of: #"(.{4,24})\1{3,}"#, options: .regularExpression) != nil { return "unclear" }
+        if containsUnclearSpeech(trimmed) { return "unclear" }
         return nil
     }
 
-    /// Reject newly introduced concrete words before asking the local model about paraphrases.
-    /// This intentionally favors precision over recall when recognizers or the summary disagree.
+    static func containsUnclearSpeech(_ text: String) -> Bool {
+        if ["聞き取れ", "不明瞭", "判別不能", "ご視聴ありがとうございました", "字幕"].contains(where: text.contains) { return true }
+        let compact = text.replacingOccurrences(of: #"\s+"#, with: "", options: .regularExpression)
+        return compact.range(of: #"(.{4,24})\1{3,}"#, options: .regularExpression) != nil
+    }
+
+    /// Reject new anchors before semantic review. A small vocabulary of ordinary role words
+    /// may reach that review when the source expresses the same concept in everyday language.
     public static func anchorsSupported(topic: String, summary: String, evidence: String) -> Bool {
         unsupportedAnchors(topic: topic, summary: summary, evidence: evidence).isEmpty
     }
@@ -80,9 +85,38 @@ public enum SafetyPolicy {
         for match in regex.matches(in: candidate, range: range) {
             guard let tokenRange = Range(match.range, in: candidate) else { return ["invalid_match"] }
             let token = String(candidate[tokenRange])
-            if !source.contains(token), !unsupported.contains(token) { unsupported.append(token) }
+            if !source.contains(token), !paraphraseHasSourceCue(token, source: source),
+               !unsupported.contains(token) { unsupported.append(token) }
         }
         return unsupported
+    }
+
+    private static func paraphraseHasSourceCue(_ token: String, source: String) -> Bool {
+        // These are common concepts, never names, numbers, speaker labels or causal claims.
+        // Passing this gate is not proof: the independent semantic reviewer must still agree.
+        let cues: [String: [[String]]] = [
+            "教育": [["学問"], ["学び"], ["教える"], ["学ぶ"]],
+            "福祉": [["助け合"], ["支え合"], ["暮らし", "支える"]],
+            "学問": [["教育"], ["学び"]],
+            "文化継承": [["文化", "受け継"], ["文化", "引き継"]],
+            "継承": [["受け継"], ["引き継"]],
+            "役割": [["場"], ["役目"], ["機能"]],
+            "機能": [["役割"], ["役目"]],
+            "場所": [["場"], ["拠点"]],
+            "交流": [["集ま"], ["分け合"], ["語り合"]],
+            "背景": [["成り立ち"], ["もともと"]],
+            "値下": [["価格交渉"]],
+            "値引": [["価格交渉"]],
+            "提示": [["交渉"]],
+            "一般的": [["大体", "やり方"], ["通常"]],
+            "最初": [["一旦"]],
+            "一度": [["一旦"]],
+            "一度大": [["一旦", "大きく"]],
+            "一旦大": [["一旦", "大きく"]],
+            "大幅": [["大きく"]],
+            "妥協点": [["落としどころ"]]
+        ]
+        return cues[token]?.contains(where: { $0.allSatisfy(source.contains) }) == true
     }
 
     public static func normalizeSummary(_ raw: String) -> String? {
@@ -94,8 +128,19 @@ public enum SafetyPolicy {
                   raw[terminator.upperBound...].range(of: #"^\s*(?:</div>\s*)+$"#, options: .regularExpression) != nil else { return nil }
         }
         var text = raw.trimmingCharacters(in: .whitespacesAndNewlines).precomposedStringWithCanonicalMapping
-        for suffix in ["なんだって。", "と話していたよ。", "という話をしていたよ。"] {
-            while text.hasSuffix(suffix + suffix) { text.removeLast(suffix.count) }
+        let reportingSuffixes = ["なんだって。", "と話していたよ。", "という話をしていたよ。",
+                                 "ようだ。", "らしい。", "みたいだよ。", "という話だ。"]
+        var removedReportingTail = true
+        while removedReportingTail {
+            removedReportingTail = false
+            for suffix in reportingSuffixes where text.hasSuffix(suffix) {
+                let preceding = String(text.dropLast(suffix.count))
+                if reportingSuffixes.contains(where: preceding.hasSuffix) {
+                    text = preceding
+                    removedReportingTail = true
+                    break
+                }
+            }
         }
         for filler in ["今どんな話をしているよ。", "今こんな話をしているよ。", "こんな話をしているよ。"] where text.contains("。" + filler) {
             text = text.replacingOccurrences(of: "。" + filler, with: "。")

@@ -152,6 +152,7 @@ struct NihoMic {
             let internalInstructions = try readInstructions(flags["--internal-prompt-file"])
             let eventContext = try readEventContext(flags["--event-context-file"])
             try await LocalModels.requireReady()
+            try await LocalModels.requireBodyReady()
             let contextAt = record.speechEndedAt ?? record.audioEndedAt
             let context = try store.recentContext(before: contextAt, sessionID: record.sessionID, excluding: id)
             let outcome = try await LocalModels.summarize(transcript, recent: [], id: id, endedAt: record.audioEndedAt,
@@ -167,6 +168,7 @@ struct NihoMic {
             guard let bytes = attributes[.size] as? NSNumber, bytes.intValue <= 64_000,
                   let transcript = String(data: try Data(contentsOf: file), encoding: .utf8) else { throw MicError.invalidArguments }
             try LocalModels.requireSummaryReady()
+            try await LocalModels.requireBodyReady()
             let outcome = try await LocalModels.summarize(transcript, recent: [], id: String(repeating: "0", count: 64), endedAt: Date(),
                                                           summaryInstructions: readInstructions(flags["--prompt-file"]),
                                                           selectionInstructions: readInstructions(flags["--selection-prompt-file"]),
@@ -194,6 +196,7 @@ struct NihoMic {
             let asr = try selectedASR(flags)
             let store = try PrivateStore()
             try await LocalModels.requireReady(asr: asr, store: store)
+            try await LocalModels.requireBodyReady()
             let source = URL(fileURLWithPath: (path as NSString).expandingTildeInPath)
             // Validate before importing; never copy an arbitrarily long recording.
             let audio: AVAudioFile
@@ -226,6 +229,7 @@ struct NihoMic {
             guard duration.isFinite, duration >= 2, duration <= 300 else { throw MicError.invalidAudio }
             if command == "review-audio" {
                 try await LocalModels.requireReady(asr: asr, store: store)
+                try await LocalModels.requireBodyReady()
                 let quality = try AudioQuality.assess(audio)
                 print(quality.description)
                 guard quality.shouldTranscribe else {
@@ -259,6 +263,7 @@ struct NihoMic {
             } else { seconds = 180 }
             let store = try PrivateStore()
             try await LocalModels.requireReady(asr: asr, store: store)
+            try await LocalModels.requireBodyReady()
             let pipeline = Pipeline(store: store, asr: asr,
                                     eventContext: try readEventContext(flags["--event-context-file"]))
             try await resume(store, pipeline)

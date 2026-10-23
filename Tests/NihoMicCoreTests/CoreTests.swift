@@ -96,6 +96,21 @@ final class CoreTests: XCTestCase {
         XCTAssertEqual(VerifiedASR.compare(primary: repeated, second: clear).reason, "unclear")
     }
 
+    func testVerifiedASRUsesSentenceBoundariesOnlyAfterAgreement() {
+        let whisper = "庭のシダは日陰で育てる\n土の表面が乾いたら鉢底から水が出るまで水やりする\n葉がしおれた時には土の状態も確認する"
+        let apple = "庭のシダは日陰で育てる。土の表面が乾いたら鉢底から水が出るまで水やりする。葉がしおれた時には土の状態も確認する。"
+        let agreed = VerifiedASR.compareForSummary(whisper: whisper, apple: apple)
+        XCTAssertNil(agreed.reason)
+        XCTAssertEqual(agreed.text, apple)
+        XCTAssertGreaterThan(agreed.agreement ?? 0, 0.30)
+        let punctuatedWhisper = VerifiedASR.compareForSummary(whisper: apple, apple: apple)
+        XCTAssertEqual(punctuatedWhisper.text, apple)
+        let unrelated = VerifiedASR.compareForSummary(whisper: whisper,
+            apple: "鎌倉の古い道について話す。海沿いの道は風が強く、山側の道は静かだという話だった。")
+        XCTAssertEqual(unrelated.reason, "asr_disagreement")
+        XCTAssertEqual(unrelated.text, whisper)
+    }
+
     func testSelectionEvidenceMustBeCopiedFromTranscript() {
         let source = "西御門の谷戸は縄文時代から続いているという話をしていました。鎌倉時代には別の使われ方をしたそうです。"
         XCTAssertTrue(LocalModels.evidenceIsInTranscript("西御門の谷戸は縄文時代から続いているという話をしていました。", transcript: source))
@@ -275,6 +290,24 @@ final class CoreTests: XCTestCase {
                            "内部要約に失敗した発話でも会話の時計は進む")
             XCTAssertTrue(try store.recentContext(before: start.addingTimeInterval(27 * 60), sessionID: sessionID).isEmpty,
                           "最後の発話から15分で失効")
+        }
+    }
+
+    func testPublishedPostSuppliesContextWhenInternalMemoFailed() throws {
+        let start = Date(timeIntervalSince1970: 1_800_000_000)
+        let id = String(repeating: "e", count: 64)
+        try withStore { store, _ in
+            try store.writeReviewTrace(ReviewTrace(internalReason: "internal_model_error",
+                                                   selectionDecision: "use", gateReason: "ok"), id: id)
+            try store.append(LocalRecord(segmentID: id, audioEndedAt: start, speechEndedAt: start,
+                                         sessionID: "event-a", decision: "publish",
+                                         topicKey: "価格交渉", text: "外国籍の方は価格交渉の進め方を説明していたよ。",
+                                         reason: "ok"))
+            let recent = try store.recentContext(before: start.addingTimeInterval(3 * 60), sessionID: "event-a")
+            XCTAssertEqual(recent.map(\.topic), ["価格交渉"])
+            XCTAssertEqual(recent.first?.summary, "外国籍の方は価格交渉の進め方を説明していたよ。")
+            XCTAssertNil(recent.first?.topicCitation, "投稿文を過去の原文引用として扱わない")
+            XCTAssertTrue(try store.recentContext(before: start.addingTimeInterval(16 * 60), sessionID: "event-a").isEmpty)
         }
     }
 

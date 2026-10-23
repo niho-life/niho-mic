@@ -21,7 +21,18 @@ public enum VerifiedASR {
             return TranscriptionResult(text: whisper, reason: reason)
         }
         let apple = try await LocalModels.transcribe(input)
-        return compare(primary: whisper, second: apple)
+        return compareForSummary(whisper: whisper, apple: apple)
+    }
+
+    public static func compareForSummary(whisper: String, apple: String) -> TranscriptionResult {
+        let comparison = compare(primary: whisper, second: apple)
+        guard comparison.reason == nil,
+              SafetyPolicy.transcriptRejection(apple) == nil,
+              !whisper.contains("。"), apple.contains("。"),
+              normalized(apple).count >= normalized(whisper).count * 3 / 5 else { return comparison }
+        // Whisper remains the independent check. Apple's sentence boundaries make the
+        // agreed speech usable by the topic and exact-quote stages.
+        return TranscriptionResult(text: apple, agreement: comparison.agreement)
     }
 
     public static func compare(primary: String, second: String) -> TranscriptionResult {

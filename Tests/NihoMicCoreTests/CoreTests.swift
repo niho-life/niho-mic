@@ -54,6 +54,23 @@ final class CoreTests: XCTestCase {
         XCTAssertNil(LocalModels.selfIntroducedSpeaker(in: "今日は松本さんも来ています。\n庭の話をします"))
     }
 
+    func testEventContextIsBoundedReferenceOnly() throws {
+        let planned = "谷戸の手入れを考える会。ゲストは佐藤さん、18時から。"
+        let value = try LocalModels.eventContext(from: Data(planned.utf8))
+        let section = LocalModels.eventContextSection(value)
+        XCTAssertTrue(section.contains(planned))
+        XCTAssertTrue(section.contains("発話内容・現在話者の証拠ではない"))
+        XCTAssertEqual(LocalModels.eventContextSection(nil), "")
+        XCTAssertNoThrow(try LocalModels.eventContext(from: Data(repeating: 0x61, count: 4096)))
+        XCTAssertThrowsError(try LocalModels.eventContext(from: Data(repeating: 0x61, count: 4097)))
+        XCTAssertThrowsError(try LocalModels.eventContext(from: Data([0xFF])))
+        XCTAssertThrowsError(try LocalModels.eventContext(from: Data(" \n ".utf8)))
+        XCTAssertThrowsError(try LocalModels.eventContext(from: Data("予定\u{0000}本文".utf8)))
+        let transcript = "谷戸の斜面にある道を手入れしたという話です。"
+        XCTAssertNil(LocalModels.verifiedSpeaker(label: "佐藤さん", evidence: "ゲストは佐藤さん", transcript: transcript))
+        XCTAssertFalse(SafetyPolicy.anchorsSupported(topic: "", summary: "佐藤さんが谷戸の道を手入れした。", evidence: transcript))
+    }
+
     func testExtractiveListSummaryNeedsAnExplicitRelation() {
         let evidence = "庭の色は\n石垣 苔庭 雨水 木々 落葉 日陰 砂利 草花みたいなのですね\nそれらの重なりが庭の色を作ると思います"
         let summary = LocalModels.listSummary(topic: "庭の色", evidence: evidence, speaker: "松本さん")
@@ -127,6 +144,12 @@ final class CoreTests: XCTestCase {
         XCTAssertEqual(SafetyPolicy.normalizeSummary(text + "」}" + String(repeating: " </div>", count: 150)), text)
         XCTAssertEqual(SafetyPolicy.normalizeSummary(text + "」}```json```{"), text)
         XCTAssertEqual(SafetyPolicy.normalizeSummary("土地の色は自然と歴史の重なりなんだって。なんだって。"), "土地の色は自然と歴史の重なりなんだって。")
+        XCTAssertEqual(SafetyPolicy.normalizeSummary("谷戸では斜面の途中に道を通したと話していたよ。と話していたよ。"),
+                       "谷戸では斜面の途中に道を通したと話していたよ。")
+        XCTAssertEqual(SafetyPolicy.normalizeSummary("谷戸では斜面の途中に道を通したと話していたよ。と話していたよ。と話していたよ。"),
+                       "谷戸では斜面の途中に道を通したと話していたよ。")
+        XCTAssertEqual(SafetyPolicy.normalizeSummary("谷戸では斜面の途中に道を通したという話をしていたよ。という話をしていたよ。"),
+                       "谷戸では斜面の途中に道を通したという話をしていたよ。")
         XCTAssertEqual(SafetyPolicy.normalizeSummary("土地の色は自然と歴史の重なりなんだって。今どんな話をしているよ。"), "土地の色は自然と歴史の重なりなんだって。")
         XCTAssertNil(SafetyPolicy.normalizeSummary("今どんな話をしているよ。"))
         XCTAssertNil(SafetyPolicy.normalizeSummary(text + "」} 文の外に続く壊れた出力。"))
@@ -181,7 +204,301 @@ final class CoreTests: XCTestCase {
         XCTAssertNil(trace.selectionDecision)
         XCTAssertNil(trace.selectedTopic)
         XCTAssertNil(trace.selectionEvidence)
+        XCTAssertNil(trace.internalSummary)
         XCTAssertEqual(trace.candidateTopic, "庭")
+    }
+
+    func testOldRecordWithoutSessionCannotSupplyContext() throws {
+        let old = #"{"segmentID":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","generatedAt":"2027-01-15T08:00:00Z","audioEndedAt":"2027-01-15T08:00:00Z","decision":"publish","topicKey":"鎌倉","text":"","reason":"ok"}"#
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        let record = try decoder.decode(LocalRecord.self, from: Data(old.utf8))
+        XCTAssertNil(record.sessionID)
+        try withStore { store, _ in
+            try store.writeReviewTrace(ReviewTrace(internalSummary: "鎌倉の土地について話した。", internalTopic: "鎌倉",
+                                                   internalReason: "ok", gateReason: "ok"), id: record.segmentID)
+            try store.append(record)
+            XCTAssertTrue(try store.recentContext(before: record.audioEndedAt.addingTimeInterval(60), sessionID: nil).isEmpty)
+            XCTAssertTrue(try store.recentContext(before: record.audioEndedAt.addingTimeInterval(60), sessionID: "event-a").isEmpty)
+        }
+    }
+
+    func testContextIsStrictlyScopedToSessionAndSpeechClock() throws {
+        let start = Date(timeIntervalSince1970: 1_800_000_000)
+        try withStore { store, _ in
+            func add(_ char: String, minute: Double, sessionID: String, summary: String?) throws {
+                let id = String(repeating: char, count: 64)
+                try store.writeReviewTrace(ReviewTrace(internalSummary: summary,
+                                                       internalTopic: summary == nil ? nil : sessionID,
+                                                       internalReason: summary == nil ? "unintelligible" : "ok",
+                                                       gateReason: "no_shareable_topic"), id: id)
+                try store.append(LocalRecord(segmentID: id, audioEndedAt: start.addingTimeInterval(minute * 60),
+                                             sessionID: sessionID, decision: "skip", reason: "no_shareable_topic"))
+            }
+            try add("a", minute: 0, sessionID: "event-a", summary: "鎌倉の土地について話した。")
+            try add("b", minute: 3, sessionID: "event-a", summary: "鎌倉の谷について続けた。")
+            try add("c", minute: 6, sessionID: "event-b", summary: "別の物件について話した。")
+            try add("d", minute: 10, sessionID: "event-b", summary: nil)
+            XCTAssertEqual(try store.recentContext(before: start.addingTimeInterval(7 * 60), sessionID: "event-a").map(\.segmentID),
+                           [String(repeating: "a", count: 64), String(repeating: "b", count: 64)])
+            XCTAssertEqual(try store.recentContext(before: start.addingTimeInterval(7 * 60), sessionID: "event-b").map(\.segmentID),
+                           [String(repeating: "c", count: 64)])
+            XCTAssertTrue(try store.recentContext(before: start.addingTimeInterval(7 * 60), sessionID: "event-c").isEmpty)
+            XCTAssertTrue(try store.recentContext(before: start.addingTimeInterval(18 * 60), sessionID: "event-a").isEmpty,
+                          "別セッションの発話は継続時間を延ばさない")
+            XCTAssertEqual(try store.recentContext(before: start.addingTimeInterval(18 * 60), sessionID: "event-b").map(\.segmentID),
+                           [String(repeating: "c", count: 64)], "同一セッションの発話は内部要約がなくても継続時間を延ばす")
+        }
+    }
+
+    func testContextUsesAudioTimeAndUnpublishedIntelligibleSegments() throws {
+        let start = Date(timeIntervalSince1970: 1_800_000_000)
+        let sessionID = "event-a"
+        try withStore { store, _ in
+            func add(_ char: String, offset: TimeInterval, decision: String, summary: String?, topic: String?) throws {
+                let id = String(repeating: char, count: 64)
+                try store.writeReviewTrace(ReviewTrace(internalSummary: summary, internalTopic: topic,
+                                                       internalEvidence: "合成された今回の発言", internalReason: summary == nil ? "unintelligible" : "ok",
+                                                       gateReason: decision == "publish" ? "ok" : "no_shareable_topic"), id: id)
+                try store.append(LocalRecord(segmentID: id, generatedAt: start.addingTimeInterval(100_000),
+                                             audioEndedAt: start.addingTimeInterval(offset), sessionID: sessionID, decision: decision,
+                                             reason: decision == "publish" ? "ok" : "no_shareable_topic"))
+            }
+            try add("a", offset: 0, decision: "publish", summary: "鎌倉の土地の成り立ちを説明した。", topic: "鎌倉")
+            try add("b", offset: 8 * 60, decision: "skip", summary: "その土地に重なる要素を説明した。", topic: "鎌倉")
+            try add("c", offset: 12 * 60, decision: "skip", summary: nil, topic: nil)
+            let recent = try store.recentContext(before: start.addingTimeInterval(16 * 60), sessionID: sessionID)
+            XCTAssertEqual(recent.map(\.segmentID), [String(repeating: "a", count: 64), String(repeating: "b", count: 64)])
+            XCTAssertEqual(try store.recentContext(before: start.addingTimeInterval(23 * 60), sessionID: sessionID).count, 2,
+                           "内部要約に失敗した発話でも会話の時計は進む")
+            XCTAssertTrue(try store.recentContext(before: start.addingTimeInterval(27 * 60), sessionID: sessionID).isEmpty,
+                          "最後の発話から15分で失効")
+        }
+    }
+
+    func testExplicitNewPlaceOverridesPriorTopic() {
+        let old = ContextEntry(segmentID: "old", endedAt: Date(timeIntervalSince1970: 100),
+                               topic: "鎌倉", summary: "鎌倉の土地の成り立ち。")
+        XCTAssertEqual(ContextWindow.resolvedTopic(explicitTopic: "", transcript: "それが土地の特徴です。", previous: old), "鎌倉")
+        XCTAssertEqual(ContextWindow.resolvedTopic(explicitTopic: "アメリカ", transcript: "アメリカでは別の成り立ちです。", previous: old), "アメリカ")
+        XCTAssertEqual(ContextWindow.resolvedTopic(explicitTopic: "アメリカ", transcript: "それは別の話です。", previous: old), "鎌倉",
+                       "今回の文字起こしにない地名を新しい対象として採用しない")
+    }
+
+    func testSensitiveInternalMemoIsNotPassedToNextSegment() {
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        let publicContext = ContextEntry(segmentID: "a", endedAt: now, topic: "鎌倉", summary: "鎌倉の土地について話した。")
+        let privateContext = ContextEntry(segmentID: "b", endedAt: now.addingTimeInterval(60),
+                                          topic: "家庭", summary: "家庭の事情を話した。")
+        XCTAssertEqual(ContextWindow.recent([publicContext, privateContext], at: now.addingTimeInterval(120)), [publicContext])
+    }
+
+    func testPriorCitationAllowsOnlyReferencedNameAndSwitchesOnExplicitPlace() throws {
+        let firstText = "鎌倉の土地の成り立ちについて、地形を手がかりに話しています。"
+        let first = ContextEntry(segmentID: String(repeating: "a", count: 64), endedAt: Date(), topic: "鎌倉",
+                                 summary: "鎌倉の土地の成り立ちについて話した。",
+                                 topicCitation: ContextWindow.citation(explicitTopic: "鎌倉", transcript: firstText,
+                                                                       segmentID: String(repeating: "a", count: 64), previous: nil))
+        let currentEvidence = "その土地には川の流れが関係すると話していました。"
+        let citation = try XCTUnwrap(ContextWindow.priorCitation(for: currentEvidence, explicitTopic: "", previous: first))
+        XCTAssertEqual(citation.segmentID, first.segmentID)
+        XCTAssertNotNil(ContextWindow.priorCitation(for: "土地の成り立ちには川が関係します。", explicitTopic: "", previous: first))
+        XCTAssertEqual(ContextWindow.unsupportedAnchors(topic: "鎌倉", summary: "鎌倉の土地には川の流れが関係する。",
+                                                        currentEvidence: currentEvidence, priorCitation: citation), [])
+        XCTAssertTrue(ContextWindow.unsupportedAnchors(topic: "鎌倉", summary: "鎌倉の縄文時代には川の流れが関係する。",
+                                                       currentEvidence: currentEvidence, priorCitation: citation).contains("縄文時代"))
+        XCTAssertNil(ContextWindow.priorCitation(for: "アメリカでは土地に川が流れる。", explicitTopic: "アメリカ", previous: first))
+        XCTAssertNil(ContextWindow.priorCitation(for: "アメリカでは土地に川が流れる。", explicitTopic: "", previous: first))
+        XCTAssertEqual(ContextWindow.resolvedTopic(explicitTopic: "アメリカ", transcript: "アメリカでは土地に川が流れる。", previous: first), "アメリカ")
+    }
+
+    func testInternalEvidenceFallbackUsesLiteralCurrentTranscriptWindow() {
+        let transcript = String(repeating: "前置きの発言です。", count: 30)
+            + "鎌倉の土地の成り立ちは、川の流れと谷の形から考えるという話です。"
+        let excerpt = EvidenceMatcher.relevantExcerpt(for: "鎌倉の土地の成り立ちを川の流れから考える。", from: transcript)
+        XCTAssertNotNil(excerpt)
+        XCTAssertTrue(transcript.contains(excerpt ?? "missing"))
+        XCTAssertTrue(excerpt?.contains("鎌倉") == true)
+        XCTAssertNil(EvidenceMatcher.relevantExcerpt(for: "アメリカの住宅市場について話した。", from: transcript))
+        XCTAssertEqual(EvidenceMatcher.extractiveSummary(from: "雑談だけです。鎌倉の土地の成り立ちは、川の流れと谷の形から考えるという話です。",
+                                                        relatedTo: "鎌倉の土地の成り立ちを川から考える。"),
+                       "鎌倉の土地の成り立ちは、川の流れと谷の形から考えるという話です。")
+        XCTAssertEqual(EvidenceMatcher.extractiveSummary(from: "鎌倉では土地の成り立ちを話しています。そして文化継承としての拠点も持っていました。",
+                                                        relatedTo: "文化継承の拠点を持っていた。"),
+                       "鎌倉では土地の成り立ちを話しています。そして文化継承としての拠点も持っていました。")
+        XCTAssertEqual(EvidenceMatcher.extractiveSummary(from: "鎌倉の谷戸には古い道が通っていて、谷の低い場所を避けて斜面の途中を選んだという説明をしています。道の位置を地形から考えます。",
+                                                        relatedTo: "道の位置を地形から考える。"),
+                       "鎌倉の谷戸には古い道が通っていて、谷の低い場所を避けて斜面の途中を選んだという説明をしています。道の位置を地形から考えます。")
+    }
+
+    func testShortVagueInternalMemoExpandsOnlyFromContinuousCurrentQuote() {
+        let transcript = "神社仏画は残り続けた。なぜ残ったのか。それはいろんな役割があったからですね。祈りの場所であり、地域コミュニティの中心であり、文化継承の拠点としても機能しました。"
+        let vague = "なぜ残ったのか。それはいろんな役割があったからですね。"
+        let expanded = EvidenceMatcher.contextualInternalSummary(from: transcript, evidence: vague,
+                                                                  draft: vague, explicitTopic: "神社仏画")
+        XCTAssertEqual(expanded, transcript)
+        XCTAssertTrue((60...140).contains(expanded?.count ?? 0))
+        XCTAssertTrue(transcript.contains(expanded ?? "missing"))
+        XCTAssertTrue(SafetyPolicy.anchorsSupported(topic: "", summary: expanded ?? "", evidence: expanded ?? ""))
+        XCTAssertNil(EvidenceMatcher.contextualInternalSummary(from: transcript, evidence: vague,
+                                                               draft: vague, explicitTopic: "鎌倉"))
+        XCTAssertNil(EvidenceMatcher.contextualInternalSummary(from: transcript, evidence: vague,
+                                                               draft: "神社仏画は祈りの場所や文化継承の拠点として残り続けた。",
+                                                               explicitTopic: "神社仏画"),
+                     "主語と関係があるメモは抽出で上書きしない")
+    }
+
+    func testPlainModelFallbackParsesUsefulFieldsAndKeepsSelectionConservative() {
+        let plain = "参考です。\n要約：鎌倉の土地の成り立ちについて話した。\n明示対象：鎌倉\n継続：いいえ\n"
+        let internalResult = LocalModels.parseInternalPlain(plain)
+        XCTAssertEqual(internalResult?.summary, "鎌倉の土地の成り立ちについて話した。")
+        XCTAssertEqual(internalResult?.explicitTopic, "鎌倉")
+        XCTAssertEqual(internalResult?.continues, false)
+        XCTAssertEqual(LocalModels.parseInternalPlain("土地の形について話した。")?.summary, "土地の形について話した。")
+        let selection = LocalModels.parseSelectionPlain("判定: 使用\n話題: 土地\n要点: 川が土地の形に関わる。\n根拠: その土地には川が流れる。")
+        XCTAssertTrue(selection?.use == true)
+        XCTAssertEqual(selection?.topicKey, "土地")
+        XCTAssertNil(LocalModels.parseSelectionPlain("話題: 土地\n要点: 川の話。"), "明示された使用判定がなければ公開選択にしない")
+    }
+
+    func testPlainFallbackAcceptsOnlyLabelledFormattingVariants() {
+        let internalText = """
+        参考です。
+        - **要約：**
+        鎌倉の谷戸では斜面の途中に道を通した。
+        **明示対象**: 鎌倉
+        3. 継続：はい。
+        補足説明は不要です。
+        """
+        let internalResult = LocalModels.parseInternalPlain(internalText)
+        XCTAssertEqual(internalResult?.summary, "鎌倉の谷戸では斜面の途中に道を通した。")
+        XCTAssertEqual(internalResult?.explicitTopic, "鎌倉")
+        XCTAssertEqual(internalResult?.continues, true)
+        let selectionText = """
+        以下の判定です。
+        - **使用判定：** 使用
+        2. 話題名: 谷戸の道
+        要点:
+        谷戸では斜面の途中に道を通した。
+        根拠発言: 谷戸では斜面の途中に道を通したと説明しました。
+        補足: これは予定情報ではありません。
+        """
+        let selection = LocalModels.parseSelectionPlain(selectionText)
+        XCTAssertTrue(selection?.use == true)
+        XCTAssertEqual(selection?.topicKey, "谷戸の道")
+        XCTAssertEqual(selection?.explanation, "谷戸では斜面の途中に道を通した。")
+        XCTAssertEqual(selection?.evidence, "谷戸では斜面の途中に道を通したと説明しました。")
+        XCTAssertEqual(LocalModels.parseInternalPlain(#"{"summary":"鎌倉の谷戸では斜面の途中に道を通した。","explicitTopic":"鎌倉","continuesPreviousTopic":true}"#)?.explicitTopic, "鎌倉")
+        XCTAssertTrue(LocalModels.parseSelectionPlain(#"{"use":true,"topicKey":"谷戸の道","explanation":"斜面の途中に道を通した。","evidence":"谷戸では斜面の途中に道を通したと説明しました。"}"#)?.use == true)
+        XCTAssertNil(LocalModels.parseSelectionPlain("予定のゲストが説明したようです。\n話題: 谷戸\n要点: 予定には谷戸と書かれています。"))
+        XCTAssertNil(LocalModels.parseSelectionPlain("判定: 使用\n判定: 見送り\n話題: 谷戸\n要点: 道の話です。"))
+        XCTAssertNil(EvidenceMatcher.excerpt(selection?.evidence ?? "", from: "庭の植物を話しました。"),
+                     "解析できても原文にない根拠は公開段へ進めない")
+    }
+
+    func testSelectionRejectsInstructionPlaceholdersBeforeEvidenceReview() {
+        XCTAssertTrue(LocalModels.isSelectionPlaceholder("短い名前"))
+        XCTAssertTrue(LocalModels.isSelectionPlaceholder("（短い話題名）"))
+        XCTAssertTrue(LocalModels.isSelectionPlaceholder("今回の発言から分かる内容"))
+        XCTAssertFalse(LocalModels.isSelectionPlaceholder("鎌倉の谷戸"))
+        let evidence = "鎌倉の谷戸では斜面の途中に道を通したと説明しました。"
+        XCTAssertNil(LocalModels.parseSelectionPlain("判定: 使用\n話題: 短い名前\n要点: 鎌倉の谷戸の道を説明した。\n根拠: \(evidence)"))
+        XCTAssertNil(LocalModels.parseSelectionPlain("判定: 使用\n話題: 鎌倉の谷戸\n要点: 今回の発言から分かる内容\n根拠: \(evidence)"))
+        XCTAssertNil(LocalModels.parseSelectionPlain("判定: 使用\n話題: 鎌倉の谷戸\n要点: 鎌倉の谷戸の道を説明した。\n根拠: 今回の原文の連続した20〜240字"))
+        XCTAssertEqual(LocalModels.parseSelectionPlain("判定: 使用\n話題: 鎌倉の谷戸\n要点: 鎌倉の谷戸の道を説明した。\n根拠: \(evidence)")?.topicKey,
+                       "鎌倉の谷戸")
+    }
+
+    func testUnlabelledInternalFallbackUsesOnlyFirstCompleteSentence() {
+        let bare = "鎌倉の谷戸では地形を見て道を通した。次の説明は使わない。\n鎌倉\nいいえ"
+        let parsed = LocalModels.parseInternalPlain(bare)
+        XCTAssertEqual(parsed?.summary, "鎌倉の谷戸では地形を見て道を通した。")
+        XCTAssertEqual(parsed?.explicitTopic, "鎌倉", "先頭文に現れた地名だけを未検証の候補とし、後段で原文照合する")
+        XCTAssertEqual(parsed?.continues, false)
+        XCTAssertNil(LocalModels.parseInternalPlain("説明します。\n鎌倉の谷戸では地形を見て道を通した。\nいいえ"))
+        XCTAssertNil(LocalModels.parseInternalPlain("鎌倉の谷戸では地形を見て道を通した\n鎌倉\nいいえ"),
+                     "文が完結しない先頭行は採用しない")
+        XCTAssertEqual(LocalModels.parseInternalPlain("鎌倉の谷戸では地形を見て道を通した。\n予定のゲスト\nいいえ")?.explicitTopic, "",
+                       "先頭文にない予定情報を対象名として拾わない")
+    }
+
+    func testVerifiedInternalMemoCanOnlySeedSelectionFromCurrentTranscript() {
+        let transcript = "鎌倉の谷戸では斜面の途中に古い道を通し、谷の低い場所を避けたと説明しています。"
+        let candidate = LocalModels.validatedInternalSelection(
+            summary: "鎌倉の谷戸では斜面の途中に古い道を通し、谷の低い場所を避けた。",
+            evidence: transcript, topic: "鎌倉", transcript: transcript)
+        XCTAssertTrue(candidate?.use == true)
+        XCTAssertEqual(candidate?.evidence, transcript)
+        XCTAssertEqual(candidate?.speakerLabel, "")
+        XCTAssertEqual(LocalModels.parseUsefulnessPlain("YES\n説明"), true)
+        XCTAssertEqual(LocalModels.parseUsefulnessPlain("NO"), false)
+        XCTAssertNil(LocalModels.parseUsefulnessPlain("参考としてYES"))
+        XCTAssertNil(LocalModels.parseUsefulnessPlain("YES\nNO"))
+        XCTAssertNil(LocalModels.validatedInternalSelection(summary: "ゲストの佐藤さんが道を説明した。",
+                                                            evidence: transcript, topic: "鎌倉", transcript: transcript),
+                     "予定にしかないゲストを発言へ加えない")
+        XCTAssertNil(LocalModels.validatedInternalSelection(summary: "鎌倉の谷戸の道を説明した。",
+                                                            evidence: transcript, topic: "浄楽寺", transcript: transcript),
+                     "原文にない予定の対象名を使わない")
+        XCTAssertNil(LocalModels.validatedInternalSelection(summary: "鎌倉の谷戸の道を説明した。",
+                                                            evidence: "浄楽寺の話を聞きました。", topic: "鎌倉", transcript: transcript),
+                     "内部引用も今回の原文と照合する")
+    }
+
+    func testSpeechOffsetCanExpireBeforeRecordingEnd() throws {
+        let start = Date(timeIntervalSince1970: 1_800_000_000)
+        try withStore { store, _ in
+            let id = String(repeating: "d", count: 64)
+            try store.writeReviewTrace(ReviewTrace(internalSummary: "鎌倉の土地について話した。", internalTopic: "鎌倉",
+                                                   internalReason: "ok", gateReason: "no_shareable_topic"), id: id)
+            try store.append(LocalRecord(segmentID: id, audioEndedAt: start.addingTimeInterval(180),
+                                         speechEndedAt: start, sessionID: "event-a", decision: "skip", reason: "no_shareable_topic"))
+            XCTAssertTrue(try store.recentContext(before: start.addingTimeInterval(15 * 60), sessionID: "event-a").isEmpty)
+            XCTAssertEqual(try store.recentContext(before: start.addingTimeInterval(14 * 60), sessionID: "event-a").count, 1)
+        }
+    }
+
+    func testStoredTopicCitationRequiresOriginalTranscript() throws {
+        try withStore { store, _ in
+            let start = Date(timeIntervalSince1970: 1_800_000_000)
+            let firstID = String(repeating: "e", count: 64)
+            let nextID = String(repeating: "f", count: 64)
+            let original = "鎌倉の土地の成り立ちを話しています。"
+            try store.writeTranscript(original, id: firstID)
+            try store.writeReviewTrace(ReviewTrace(internalSummary: "鎌倉の土地について話した。", internalTopic: "鎌倉",
+                                                   internalReason: "ok", topicSourceSegmentID: firstID,
+                                                   topicSourceEvidence: original, gateReason: "ok"), id: firstID)
+            try store.append(LocalRecord(segmentID: firstID, audioEndedAt: start, sessionID: "event-a", decision: "publish", reason: "ok"))
+            try store.writeReviewTrace(ReviewTrace(internalSummary: "その土地に川が関わる。", internalTopic: "鎌倉",
+                                                   internalReason: "ok", topicSourceSegmentID: firstID,
+                                                   topicSourceEvidence: "鎌倉では存在しない説明をした。", gateReason: "no_shareable_topic"), id: nextID)
+            try store.append(LocalRecord(segmentID: nextID, audioEndedAt: start.addingTimeInterval(180),
+                                         sessionID: "event-a", decision: "skip", reason: "no_shareable_topic"))
+            let entries = try store.recentContext(before: start.addingTimeInterval(360), sessionID: "event-a")
+            XCTAssertEqual(entries.count, 2)
+            XCTAssertNotNil(entries.first?.topicCitation)
+            XCTAssertNil(entries.last?.topicCitation, "原文に存在しない前区間引用を再利用しない")
+        }
+    }
+
+    func testStoredTopicCitationCannotReferenceAnotherSession() throws {
+        try withStore { store, _ in
+            let start = Date(timeIntervalSince1970: 1_800_000_000)
+            let sourceID = String(repeating: "a", count: 64)
+            let currentID = String(repeating: "b", count: 64)
+            let excerpt = "鎌倉の土地の成り立ちを話しています。"
+            try store.writeTranscript(excerpt, id: sourceID)
+            try store.append(LocalRecord(segmentID: sourceID, audioEndedAt: start, sessionID: "event-a",
+                                         decision: "skip", reason: "no_shareable_topic"))
+            try store.writeReviewTrace(ReviewTrace(internalSummary: "土地について話した。", internalTopic: "鎌倉",
+                                                   internalReason: "ok", topicSourceSegmentID: sourceID,
+                                                   topicSourceEvidence: excerpt, gateReason: "no_shareable_topic"), id: currentID)
+            try store.append(LocalRecord(segmentID: currentID, audioEndedAt: start.addingTimeInterval(60),
+                                         sessionID: "event-b", decision: "skip", reason: "no_shareable_topic"))
+            let entries = try store.recentContext(before: start.addingTimeInterval(120), sessionID: "event-b")
+            XCTAssertEqual(entries.count, 1)
+            XCTAssertNil(entries.first?.topicCitation)
+        }
     }
 
     func withStore(_ body: (PrivateStore, URL) throws -> Void) throws {

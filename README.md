@@ -6,7 +6,8 @@ NIHO 鎌倉で交わされている話の要点を、連絡先や詳しい住所
 
 - 運営者が指定したマイクから3分ずつ連続録音する。Mac内で発話の量と分類確信度を判定し、雑音や談笑が中心で強い発話判定の少ない区切りは文字起こし前に見送る。
 - 既定はローカルWhisperで文字起こしし、macOS SpeechTranscriberの結果と照合する。両者が大きく食い違う区切りは要約しない。Apple単独、Whisper単独、Geminiも明示選択できる。
-- Mac 内の AI で「その場の様子が伝わるか、後で役に立つか」を判定して話題を選び、日本語 140 文字以内の場の共有または伝聞の短文を Mac に保存する。
+- Mac 内の AI で、聞き取れた各区切りの内部要約（140字以内）を先に作る。その後「その場の様子が伝わるか、後で役に立つか」を判定し、採用した話題だけ日本語80〜140字の投稿案を作って Mac に保存する。発信を見送った区切りの内部要約も、話題の継続に使える。
+- 同じ録音セッションの直近の内部要約を次の区切りへ渡す。別の録音開始や単発ファイル処理には自動で引き継がない。前区間の地名を補うときは元の文字起こしの出典を確認し、今回別の場所が明示されたら切り替える。同じセッションで最後の発話から15分以上会話がなければ文脈を失効させる。前区間の名前だけで現在の話者は決めない。
 - 話題には文字起こしから抜き出した根拠の発言を付け、要約がそこから言えるか別のMac内AIで確認する。主語や因果が根拠を超えたら一度書き直し、なお裏付けられなければ別の話題を一度試す。
 - 音声は 72 時間、生の文字起こしは 168 時間保持した後に削除する。
 - NIHOappへの投稿と自動起動はまだ行わない。Gemini 指定時だけ音声を Google 側へ送る。要約と使用判定は引き続き Mac 内で行う。
@@ -79,7 +80,13 @@ Apple単独は速い一方、実録音で語句の取り違えがありました
 .build/release/niho-mic run --input '<マイクUID>' --segment-seconds 300 --asr whisper
 ```
 
-**Ctrl-C** で停止します。既に同意を得て録音した短い音声があれば、`once --audio '<ファイルの絶対パス>'` でも処理できます。実音声、文字起こし、短文ログはこの公開リポジトリへ追加しないでください。
+**Ctrl-C** で停止します。既に同意を得て録音した短い音声があれば、`once --audio '<ファイルの絶対パス>'` でも処理できます。単発処理は毎回独立した会話です。連続する複数ファイルを同じ会話として試す場合だけ、各回に同じ `--session '<任意の英数字ID>'` を指定します。実音声、文字起こし、短文ログはこの公開リポジトリへ追加しないでください。
+
+その時間の予定が分かる場合は、UTF-8のローカルテキストにイベント名、予定されたゲスト、公開済みの肩書を書き、`--event-context-file '<予定テキストの絶対パス>'` を追加できます。予定は話題や固有名詞を理解する手掛かりです。実際に誰がその区間を話したか、何を発言したかの証拠にはせず、本文の新しい事実は文字起こしで確認します。ファイルは公開リポジトリに置かず、`run`、`once`、`review-audio`、`review-text`、`preview` で明示指定します。v2 ではNIHO Desktopが該当時間の予定を取得して渡す設計です。
+
+```bash
+.build/release/niho-mic once --audio '<5分以内の音声>' --event-context-file '<予定テキストの絶対パス>'
+```
 
 文字起こし前の音声判定だけを試すには次を使います。Mac標準のSound Analysisで発話らしさを判定し、発話候補が少ない場合や分類の確信度が低い場合に見送ります。音量だけでは雑音と発話を区別できないため、分類結果に秒数と割合のルールを適用します。発話判定は「言葉が正しく聞き取れる」保証ではありません。既定モードでは文字起こし後の照合、根拠の発言の抽出、Mac内AIによる要約の根拠確認も行います。
 
@@ -96,7 +103,7 @@ Apple単独は速い一方、実録音で語句の取り違えがありました
 .build/release/niho-mic transcribe --audio '<5分以内の音声>' --asr gemini
 ```
 
-同じ録音で文字起こしから投稿案まで比較するときは `review-audio` を使います。結果は端末だけに表示し、録音ログや処理済み判定は変更しません。文字起こし、採用判断と理由、要約候補、最終チェックが順に出ます。生の文字起こしを画面に出すため、画面共有中は注意してください。
+同じ録音で文字起こしから投稿案まで比較するときは `review-audio` を使います。結果は端末だけに表示し、録音ログや処理済み判定は変更しません。文字起こし、内部要約と継続話題、採用判断と理由、投稿候補、最終チェックが順に出ます。生の文字起こしを画面に出すため、画面共有中は注意してください。
 
 ```bash
 .build/release/niho-mic review-audio --audio '<5分以内の音声>' --asr apple
@@ -119,24 +126,26 @@ Apple単独は速い一方、実録音で語句の取り違えがありました
 jq -r 'select(.decision == "publish") | .text' "$HOME/Library/Application Support/life.niho.mic/logs/"*.jsonl
 ```
 
-文字起こし・使用判定と理由・要約候補・最終短文・記録状態を順に確認するときは次を使います。区切りIDも表示されます。生の文字起こしが端末に出るので、画面共有中は注意してください。
+文字起こし・内部要約・使用判定と理由・投稿候補・最終短文・記録状態を順に確認するときは次を使います。区切りIDも表示されます。生の文字起こしが端末に出るので、画面共有中は注意してください。
 
 ```bash
 .build/release/niho-mic inspect --latest 5
 ```
 
-使用判定と要約の指示文は `Sources/NihoMicCore/LocalModels.swift` の `selectionInstructions` と `instructions` です。要約指示は「今こんな話をしている」という場の共有と、後で役立つ知識の両方に対応します。次の方法ならソースを変更・再ビルドせず、保存済み文字起こしに対して何度でも試せます。`preview` は採用ログを変更せず、重複判定を除く現在の出力検査まで実行します。
+内部要約・使用判定・投稿案の指示文は `Sources/NihoMicCore/LocalModels.swift` の `internalInstructions`、`selectionInstructions`、`instructions` です。次の方法ならソースを変更・再ビルドせず、保存済み文字起こしに対して何度でも試せます。`preview` は採用ログを変更せず、重複判定を除く現在の出力検査まで実行します。
 
 ```bash
+.build/release/niho-mic internal-prompt > "$HOME/Documents/niho-mic-internal-prompt.txt"
 .build/release/niho-mic selection-prompt > "$HOME/Documents/niho-mic-selection-prompt.txt"
 .build/release/niho-mic prompt > "$HOME/Documents/niho-mic-summary-prompt.txt"
+open -e "$HOME/Documents/niho-mic-internal-prompt.txt"
 open -e "$HOME/Documents/niho-mic-selection-prompt.txt"
 open -e "$HOME/Documents/niho-mic-summary-prompt.txt"
-.build/release/niho-mic preview --segment '<inspectに表示された64桁の区切りID>' --selection-prompt-file "$HOME/Documents/niho-mic-selection-prompt.txt" --prompt-file "$HOME/Documents/niho-mic-summary-prompt.txt"
-.build/release/niho-mic review-text --transcript-file '<ローカルの文字起こし.txt>' --selection-prompt-file "$HOME/Documents/niho-mic-selection-prompt.txt" --prompt-file "$HOME/Documents/niho-mic-summary-prompt.txt"
+.build/release/niho-mic preview --segment '<inspectに表示された64桁の区切りID>' --internal-prompt-file "$HOME/Documents/niho-mic-internal-prompt.txt" --selection-prompt-file "$HOME/Documents/niho-mic-selection-prompt.txt" --prompt-file "$HOME/Documents/niho-mic-summary-prompt.txt"
+.build/release/niho-mic review-text --transcript-file '<ローカルの文字起こし.txt>' --internal-prompt-file "$HOME/Documents/niho-mic-internal-prompt.txt" --selection-prompt-file "$HOME/Documents/niho-mic-selection-prompt.txt" --prompt-file "$HOME/Documents/niho-mic-summary-prompt.txt"
 ```
 
-`selection-prompt` は使用判定と話題選択、`prompt` は要約生成の指示です。要約生成は「話題: ...」と「本文: ...」の2行だけを受け付けます。以前に保存したプロンプトを使う場合もこの出力形式を指示してください。最終の安全性確認の指示は同じ `LocalModels.swift` の `outputSafetyInstructions` にあります。候補の連絡先・詳しい住所・センシティブ内容・140字などの最終検査は `preview` でも有効です。編集するファイルには実際の会話や文字起こしを貼り付けず、公開リポジトリにも追加しないでください。
+`internal-prompt` は公開前の内部要約、`selection-prompt` は使用判定と話題選択、`prompt` は投稿案生成の指示です。投稿案生成は「話題: ...」と「本文: ...」の2行だけを受け付けます。以前に保存したプロンプトを使う場合もこの出力形式を指示してください。最終の安全性確認の指示は同じ `LocalModels.swift` の `outputSafetyInstructions` にあります。候補の連絡先・詳しい住所・センシティブ内容・140字などの最終検査は `preview` でも有効です。編集するファイルには実際の会話や文字起こしを貼り付けず、公開リポジトリにも追加しないでください。
 
 音声は72時間、文字起こしと要約候補の診断情報は168時間で削除します。稼働中と次回起動時に期限を確認します。停止中に期限が過ぎた場合は `.build/release/niho-mic prune` を実行できます。短文ログの削除は `.build/release/niho-mic delete-logs --confirm` です。
 

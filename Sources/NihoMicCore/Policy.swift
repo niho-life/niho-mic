@@ -94,7 +94,9 @@ public enum SafetyPolicy {
                   raw[terminator.upperBound...].range(of: #"^\s*(?:</div>\s*)+$"#, options: .regularExpression) != nil else { return nil }
         }
         var text = raw.trimmingCharacters(in: .whitespacesAndNewlines).precomposedStringWithCanonicalMapping
-        if text.hasSuffix("なんだって。なんだって。") { text.removeLast("なんだって。".count) }
+        for suffix in ["なんだって。", "と話していたよ。", "という話をしていたよ。"] {
+            while text.hasSuffix(suffix + suffix) { text.removeLast(suffix.count) }
+        }
         for filler in ["今どんな話をしているよ。", "今こんな話をしているよ。", "こんな話をしているよ。"] where text.contains("。" + filler) {
             text = text.replacingOccurrences(of: "。" + filler, with: "。")
         }

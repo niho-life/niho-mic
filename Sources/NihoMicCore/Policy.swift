@@ -12,7 +12,7 @@ public enum MicError: String, Error, LocalizedError {
         case .invalidArguments: "引数が不正です。niho-mic help を確認してください。"
         case .unsupportedPlatform: "macOS 26 以上の Apple Silicon が必要です。"
         case .speechUnavailable: "SpeechTranscriber を利用できません。"
-        case .japaneseModelMissing: "日本語音声モデルが未準備です。niho-mic install-speech-model を明示実行してください。"
+        case .japaneseModelMissing: "日本語音声モデルが未準備です。リポジトリで .build/release/niho-mic install-speech-model を実行してください。"
         case .intelligenceUnavailable: "Mac 内 AI が未準備です。システム設定の Apple Intelligence を有効にし、モデルのダウンロード完了を待って doctor を再実行してください。"
         case .japaneseUnsupported: "Mac 内 AI の日本語対応を確認できません。"
         case .microphoneDenied: "マイクの使用が許可されていません。システム設定のプライバシーとセキュリティで起動元ターミナルを確認してください。"

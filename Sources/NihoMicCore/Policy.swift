@@ -161,10 +161,9 @@ public enum SafetyPolicy {
         }
         guard !text.isEmpty, text.count <= 140,
               !text.contains("\n"), !text.contains("\r"),
-              (1...2).contains(text.filter({ $0 == "。" }).count),
+              text.filter({ "。！？".contains($0) }).count <= 2,
               !text.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) || $0.properties.generalCategory == .format }),
               text.range(of: #"[ぁ-んァ-ヶ一-龯]"#, options: .regularExpression) != nil,
-              ["なんだって。", "んだって。", "という話をしていたよ。", "と話していたよ。", "という話だ。", "ようだ。", "らしい。", "みたいだよ。", "とのこと。", "よ。"].contains(where: text.hasSuffix),
               !isSensitive(text),
               !["SKIP", "見送り", "不明", "話という話", "話題だったよ", "今どんな話", "今こんな話", "こんな話をしている", "```", "<", ">", "{", "}", "■", "＊", "***", "[伏"].contains(where: text.contains)
         else { return nil }

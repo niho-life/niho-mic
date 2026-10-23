@@ -361,7 +361,7 @@ struct NihoMic {
         case "personal_name_output": return "旧版の氏名検査で見送り"
         case "sensitive_output": return "要約候補に個人情報またはセンシティブな内容がある"
         case "vague_summary": return "要約候補が抽象的で内容が伝わらない"
-        case "invalid_summary_format": return "要約候補が140字・1〜2文・文末などの形式に合わない"
+        case "invalid_summary_format": return "要約候補が140字・文数などの形式に合わない"
         case "duplicate": return "直近とほぼ同じ内容"
         case "safety_review_rejected": return "Mac 内 AI が要約候補の公開を見送った"
         case "safety_model_error": return "Mac 内 AI の安全性確認を完了できなかった"
@@ -379,9 +379,13 @@ struct NihoMic {
             print("にほちゃんマイク｜ライブ確認　\(Date().formatted(date: .abbreviated, time: .standard))")
             if let status = snapshot.status, status.isCurrentProcess {
                 if status.recording {
-                    let elapsed = max(0, Date().timeIntervalSince(status.segmentStartedAt))
-                    let remaining = max(0, Int(ceil(status.segmentSeconds - elapsed)))
-                    print("● 録音中　次の区切りまで約\(remaining)秒　入力: \(terminalSafe(status.inputUID))")
+                    if status.captureMode == "standby" {
+                        print("◌ 音声待機中　会話候補を検知したら録音開始　入力: \(terminalSafe(status.inputUID))")
+                    } else {
+                        let elapsed = max(0, Date().timeIntervalSince(status.segmentStartedAt))
+                        let remaining = max(0, Int(ceil(status.segmentSeconds - elapsed)))
+                        print("● 録音中　次の区切りまで約\(remaining)秒　入力: \(terminalSafe(status.inputUID))")
+                    }
                 } else { print("○ 録音停止・保存済み区切りを処理中") }
                 let stage: String
                 switch status.stage {
@@ -451,7 +455,7 @@ struct NihoMic {
         try await recorder.start()
         status.update { $0.recording = true }
         do { try status.check() } catch { _ = recorder.stop(); throw error }
-        print("録音中 ● 指定した入力機器のみ使用しています。停止: Ctrl-C")
+        print("音声待機中 ◌ 指定した入力機器を監視しています。会話候補で録音開始。停止: Ctrl-C")
         var previous: Task<Void, Error>?
         let pending = PendingCounter()
         var failure: Error?
@@ -474,7 +478,17 @@ struct NihoMic {
         do {
             while !flag.stopped {
                 try recorder.verify()
-                if ContinuousClock.now >= boundary {
+                if let url = recorder.pauseIfQuiet() {
+                    enqueue(url, ended: Date())
+                    status.update { $0.captureMode = "standby"; $0.pendingSegments = pending.count }
+                    print("無音が続いたため録音を区切り、音声待機に戻りました。")
+                }
+                if try recorder.beginIfActive() {
+                    boundary = ContinuousClock.now.advanced(by: .milliseconds(Int64(seconds * 1000)))
+                    status.update { $0.captureMode = "recording"; $0.segmentStartedAt = Date() }
+                    print("会話候補を検知 ● 録音を開始しました。")
+                }
+                if recorder.isRecording, ContinuousClock.now >= boundary {
                     if pending.count >= 2 {
                         print("処理待ちの区切りが上限に達したため、録音を停止します。")
                         flag.stop(); break
@@ -492,7 +506,7 @@ struct NihoMic {
                 if ContinuousClock.now >= cleanup {
                     try await pipeline.expire(); cleanup = ContinuousClock.now.advanced(by: .seconds(60))
                 }
-                try await Task.sleep(for: .milliseconds(200))
+                try await Task.sleep(for: recorder.isRecording ? .milliseconds(200) : .milliseconds(500))
             }
         } catch { failure = error }
         let last = recorder.stop()

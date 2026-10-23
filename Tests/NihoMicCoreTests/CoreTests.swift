@@ -3,6 +3,57 @@ import AVFoundation
 @testable import NihoMicCore
 
 final class CoreTests: XCTestCase {
+    func testAcousticStandbyWaitsThroughSteadyNoiseAndPausesAfterQuiet() {
+        var gate = AcousticActivityGate()
+        for _ in 0..<50 {
+            XCTAssertEqual(gate.observe(rms: 0.010, seconds: 0.1, recording: false), .none)
+        }
+        var started = false
+        for _ in 0..<8 {
+            if gate.observe(rms: 0.040, seconds: 0.1, recording: false) == .start { started = true; break }
+        }
+        XCTAssertTrue(started, "周囲の音量を超える会話候補でだけ録音を開始する")
+        for _ in 0..<200 {
+            XCTAssertEqual(gate.observe(rms: 0.040, seconds: 0.1, recording: true), .none)
+        }
+        var stopped = false
+        for _ in 0..<310 {
+            if gate.observe(rms: 0.010, seconds: 0.1, recording: true) == .stop { stopped = true; break }
+        }
+        XCTAssertTrue(stopped, "30秒の静けさで録音を区切る")
+        for _ in 0..<30 {
+            XCTAssertEqual(gate.observe(rms: 0.010, seconds: 0.1, recording: false), .none)
+        }
+    }
+
+    func testStandbyPreRollCopiesStereoAudioAndDetectsLoudChannel() throws {
+        let format = try XCTUnwrap(AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 48_000,
+                                                 channels: 2, interleaved: false))
+        let original = try XCTUnwrap(AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 128))
+        original.frameLength = 128
+        let channels = try XCTUnwrap(original.floatChannelData)
+        for frame in 0..<128 {
+            channels[0][frame] = 0
+            channels[1][frame] = 0.04
+        }
+        let copied = try XCTUnwrap(WindowRecorder.copy(original))
+        XCTAssertEqual(copied.frameLength, 128)
+        XCTAssertEqual(copied.floatChannelData?[1][0], 0.04)
+        channels[1][0] = 0
+        XCTAssertEqual(copied.floatChannelData?[1][0], 0.04, "入力バッファの再利用後も先頭の音を保つ")
+        XCTAssertEqual(WindowRecorder.rms(copied), 0.04, accuracy: 0.0001)
+
+        let interleaved = try XCTUnwrap(AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 48_000,
+                                                      channels: 2, interleaved: true))
+        let packed = try XCTUnwrap(AVAudioPCMBuffer(pcmFormat: interleaved, frameCapacity: 128))
+        packed.frameLength = 128
+        let blocks = UnsafeMutableAudioBufferListPointer(packed.mutableAudioBufferList)
+        let samples = try XCTUnwrap(blocks.first?.mData).assumingMemoryBound(to: Float.self)
+        for frame in 0..<128 { samples[frame * 2] = 0; samples[frame * 2 + 1] = 0.04 }
+        let packedCopy = try XCTUnwrap(WindowRecorder.copy(packed))
+        XCTAssertEqual(WindowRecorder.rms(packedCopy), 0.04, accuracy: 0.0001)
+    }
+
     func testGeminiAcceptsOnlyDirectAudioRead() throws {
         let path = "/private/tmp/synthetic.wav"
         let stream = """
@@ -176,7 +227,8 @@ final class CoreTests: XCTestCase {
         XCTAssertEqual(SafetyPolicy.normalizeSummary("日陰の庭ではシダが育つようだ。"), "日陰の庭ではシダが育つようだ。")
         XCTAssertEqual(SafetyPolicy.normalizeSummary("日陰の庭ではシダが育ち、葉を残して冬を越すとのこと。"),
                        "日陰の庭ではシダが育ち、葉を残して冬を越すとのこと。")
-        XCTAssertNil(SafetyPolicy.normalizeSummary("日陰の庭ではシダが育つ気がするから。"), "文が完結しない候補は通さない")
+        XCTAssertEqual(SafetyPolicy.normalizeSummary("日陰の庭ではシダが育つ気がするから。"), "日陰の庭ではシダが育つ気がするから。",
+                       "文末だけで棄却せず、内容と根拠の確認へ渡す")
         XCTAssertEqual(SafetyPolicy.fingerprint("日陰の庭ではシダが育つとのこと。"),
                        SafetyPolicy.fingerprint("日陰の庭ではシダが育つんだって。"))
         XCTAssertEqual(SafetyPolicy.normalizeSummary("松本さんは千葉出身のデザイナーみたいだよ。"), "松本さんは千葉出身のデザイナーみたいだよ。")
@@ -186,7 +238,9 @@ final class CoreTests: XCTestCase {
         XCTAssertEqual(SafetyPolicy.normalizeSummary("庭ではシダが育つなんだって。葉を残して冬を越すなんだって。"), "庭ではシダが育つなんだって。葉を残して冬を越すなんだって。")
         XCTAssertNil(SafetyPolicy.normalizeSummary(String(repeating: "庭", count: 135) + "なんだって。"))
         XCTAssertNotNil(SafetyPolicy.normalizeSummary(String(repeating: "庭", count: 134) + "なんだって。"))
-        XCTAssertNil(SafetyPolicy.normalizeSummary("断定した歴史的事実です。"))
+        XCTAssertEqual(SafetyPolicy.normalizeSummary("断定した歴史的事実です。"), "断定した歴史的事実です。")
+        XCTAssertEqual(SafetyPolicy.normalizeSummary("今は谷戸の成り立ちを話しています！"), "今は谷戸の成り立ちを話しています！")
+        XCTAssertEqual(SafetyPolicy.normalizeSummary("今は谷戸の成り立ちを話しています"), "今は谷戸の成り立ちを話しています")
         XCTAssertNil(SafetyPolicy.normalizeSummary("庭の話。\n植物なんだって。"))
         XCTAssertNil(SafetyPolicy.normalizeSummary("庭\u{200B}の植物なんだって。"))
         XCTAssertNil(SafetyPolicy.normalizeSummary("病気の話なんだって。"))
@@ -628,6 +682,20 @@ final class CoreTests: XCTestCase {
         }
         _ = try PrivateStore(root: root)
         XCTAssertFalse(FileManager.default.fileExists(atPath: scratch.path))
+    }
+
+    func testSpeechProbeIsNotResumedAndIsRemovedOnRestart() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("niho-mic-synthetic-test-" + UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let probe: URL
+        do {
+            let store = try PrivateStore(root: root)
+            probe = store.audioDirectory.appendingPathComponent("probe-" + UUID().uuidString.lowercased() + ".caf")
+            try Data("synthetic audio".utf8).write(to: probe)
+            XCTAssertTrue(try store.pendingAudio().isEmpty)
+        }
+        _ = try PrivateStore(root: root)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: probe.path))
     }
 
     func testStoreRejectsSymlinks() throws {

@@ -93,6 +93,11 @@ public final class PrivateStore {
             try secure(url)
             try manager.removeItem(at: url)
         }
+        for url in try manager.contentsOfDirectory(at: audioDirectory, includingPropertiesForKeys: nil)
+            where Self.isSpeechProbe(url) {
+            try secure(url)
+            try manager.removeItem(at: url)
+        }
         try expire()
     }
 
@@ -238,8 +243,14 @@ public final class PrivateStore {
     public func pendingAudio() throws -> [URL] {
         let completed = Set(try records().map(\.segmentID))
         return try manager.contentsOfDirectory(at: audioDirectory, includingPropertiesForKeys: nil).filter {
-            $0.pathExtension == "caf" && !completed.contains($0.deletingPathExtension().lastPathComponent)
+            $0.pathExtension == "caf" && !Self.isSpeechProbe($0)
+                && !completed.contains($0.deletingPathExtension().lastPathComponent)
         }
+    }
+
+    private static func isSpeechProbe(_ url: URL) -> Bool {
+        url.lastPathComponent.range(of: #"^probe-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.caf$"#,
+                                    options: .regularExpression) != nil
     }
 
     public func deleteLogs() throws {

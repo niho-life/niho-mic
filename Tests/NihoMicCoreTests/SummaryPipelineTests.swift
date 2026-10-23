@@ -51,7 +51,8 @@ final class SummaryPipelineTests: XCTestCase {
         let noHearsay = "神社仏閣は祈りの場であり、地域で学問を分け合う場として使われた。"
         let result = try await LocalModels.generatePostBody(structured: { noHearsay }, plain: { "unused" })
         XCTAssertEqual(result, noHearsay, "形式復旧で主張や伝聞を自動補完しない")
-        XCTAssertNil(SafetyPolicy.normalizeSummary(result))
+        XCTAssertEqual(SafetyPolicy.normalizeSummary(result), noHearsay,
+                       "文末の形式で落とさず、後段の根拠・安全審査へ渡す")
         let invented = "青葉寺では神社仏閣について12種類の役割を説明したんだって。"
         let parsed = try await LocalModels.generatePostBody(structured: { invented }, plain: { "unused" })
         XCTAssertFalse(SafetyPolicy.anchorsSupported(topic: "神社仏閣", summary: parsed, evidence: roles))

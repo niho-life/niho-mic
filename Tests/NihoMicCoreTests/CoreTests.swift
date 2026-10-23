@@ -174,6 +174,11 @@ final class CoreTests: XCTestCase {
         XCTAssertEqual(SafetyPolicy.normalizeSummary("庭ではシダが育つんだって。"), "庭ではシダが育つんだって。")
         XCTAssertEqual(SafetyPolicy.normalizeSummary("日陰の庭でシダが育つという話だ。"), "日陰の庭でシダが育つという話だ。")
         XCTAssertEqual(SafetyPolicy.normalizeSummary("日陰の庭ではシダが育つようだ。"), "日陰の庭ではシダが育つようだ。")
+        XCTAssertEqual(SafetyPolicy.normalizeSummary("日陰の庭ではシダが育ち、葉を残して冬を越すとのこと。"),
+                       "日陰の庭ではシダが育ち、葉を残して冬を越すとのこと。")
+        XCTAssertNil(SafetyPolicy.normalizeSummary("日陰の庭ではシダが育つ気がするから。"), "文が完結しない候補は通さない")
+        XCTAssertEqual(SafetyPolicy.fingerprint("日陰の庭ではシダが育つとのこと。"),
+                       SafetyPolicy.fingerprint("日陰の庭ではシダが育つんだって。"))
         XCTAssertEqual(SafetyPolicy.normalizeSummary("松本さんは千葉出身のデザイナーみたいだよ。"), "松本さんは千葉出身のデザイナーみたいだよ。")
         XCTAssertEqual(SafetyPolicy.normalizeSummary("今は西御門の谷戸の成り立ちについて話しているよ。"), "今は西御門の谷戸の成り立ちについて話しているよ。")
         XCTAssertEqual(SafetyPolicy.normalizeSummary("今は木材の色に合わせてロゴを考えているよ。みんなでデザインの案を話しているよ。"), "今は木材の色に合わせてロゴを考えているよ。みんなでデザインの案を話しているよ。")

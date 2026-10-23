@@ -156,6 +156,13 @@ final class CoreTests: XCTestCase {
         XCTAssertGreaterThan(agreed.agreement ?? 0, 0.30)
         let punctuatedWhisper = VerifiedASR.compareForSummary(whisper: apple, apple: apple)
         XCTAssertEqual(punctuatedWhisper.text, apple)
+        let partialWhisper = "鎌倉市の指定管理では市民活動センターの運営会議が人を雇い地域の活動を支えている参加者は活動方法について聞いていた"
+        let partialApple = "鎌倉市の指定管理では市民活動センターを業者が管理し体育館の人を雇い地域の活動を支えている参加者は土地の成り立ちについて聞いていた。"
+        let partial = VerifiedASR.compareForSummary(whisper: partialWhisper, apple: partialApple)
+        XCTAssertNil(partial.reason)
+        XCTAssertGreaterThan(partial.agreement ?? 0, 0.30)
+        XCTAssertLessThan(partial.agreement ?? 1, 0.60)
+        XCTAssertEqual(partial.text, partialWhisper)
         let unrelated = VerifiedASR.compareForSummary(whisper: whisper,
             apple: "鎌倉の古い道について話す。海沿いの道は風が強く、山側の道は静かだという話だった。")
         XCTAssertEqual(unrelated.reason, "asr_disagreement")

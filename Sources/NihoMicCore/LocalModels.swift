@@ -981,13 +981,16 @@ public actor Pipeline {
     public func expire() throws { try store.expire() }
 
     public func process(_ source: URL, endedAt: Date = Date(), alreadyArchived: Bool = false,
-                        inheritSession: Bool = true) async throws {
+                        inheritSession: Bool = true,
+                        onStage: (@Sendable (ProcessingStage, String?) -> Void)? = nil) async throws {
+        defer { onStage?(.idle, nil) }
         let startedAt = Date()
         let segmentSessionID = inheritSession ? sessionID : UUID().uuidString.lowercased()
         let segmentEventContext = inheritSession ? eventContext : nil
         defer { print("区切り処理時間: \(Int(Date().timeIntervalSince(startedAt)))秒") }
         try store.expire()
         let id = try PrivateStore.hash(source)
+        onStage?(.audioCheck, id)
         let records = try store.records()
         if records.contains(where: { $0.segmentID == id }) {
             if alreadyArchived, source.deletingPathExtension().lastPathComponent != id { try store.removeTemporaryAudio(source) }
@@ -1017,6 +1020,7 @@ public actor Pipeline {
         }
         let transcription: TranscriptionResult
         let speechEndedAt = quality.lastConfidentSpeechOffset.map { endedAt.addingTimeInterval($0 - duration) } ?? endedAt
+        onStage?(.transcribing, id)
         switch asr {
         case .verified: transcription = try await VerifiedASR.transcribe(file, store: store)
         case .apple: transcription = TranscriptionResult(text: try await LocalModels.transcribe(file))
@@ -1032,6 +1036,7 @@ public actor Pipeline {
             print("見送り: 文字起こしの品質診断で \(reason) と判定しました。")
             return
         }
+        onStage?(.summarizing, id)
         let recent = records.filter {
             $0.sessionID == segmentSessionID && $0.decision == "publish"
                 && Date().timeIntervalSince($0.generatedAt) < 24 * 3600

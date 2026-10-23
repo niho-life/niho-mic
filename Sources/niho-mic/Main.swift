@@ -20,6 +20,7 @@ struct NihoMic {
     niho-mic review-audio --audio <音声ファイル> [--asr verified|apple|whisper|gemini] [--event-context-file <UTF-8ファイル>] [--internal-prompt-file <ファイル>] [--selection-prompt-file <ファイル>] [--prompt-file <ファイル>]
     niho-mic review-text --transcript-file <文字起こしファイル> [--event-context-file <UTF-8ファイル>] [--internal-prompt-file <ファイル>] [--selection-prompt-file <ファイル>] [--prompt-file <ファイル>]
     niho-mic inspect [--latest <1〜50>]
+    niho-mic monitor [--latest <1〜50>]
     niho-mic selection-prompt
     niho-mic internal-prompt
     niho-mic prompt
@@ -44,6 +45,7 @@ struct NihoMic {
     停止中は削除されないため、再起動時または prune で削除してください。
     短文ログは保存先の logs/YYYY-MM-DD.jsonl です。標準出力には本文を表示しません。
     inspect はこの端末に限り、文字起こし・使用判定・要約・最終チェックを順に表示します。画面共有中は注意してください。
+    monitor は別の端末で録音状態と直近の区切りの結果を2秒ごとに更新します。Ctrl-C で表示だけを終了します。
     preview は保存済み文字起こしを現在の Mac 内 AI で使用判定・再要約します。ログは変更しません。
     internal-prompt / selection-prompt / prompt の出力をファイルへ保存・編集し、preview で試せます。根拠と最終の安全性確認は常に適用されます。
     モデルの取得は install-speech-model の明示操作のみ。Mac 内 AI は Apple Intelligence 設定で準備します。
@@ -132,6 +134,14 @@ struct NihoMic {
                 print("\n=== \(record.generatedAt.formatted(date: .abbreviated, time: .standard)) / \(record.segmentID)\(session) ===")
                 try printReview(transcript: store.transcript(id: record.segmentID), record: record, trace: store.reviewTrace(id: record.segmentID))
             }
+        case "monitor":
+            let flags = try options(tail, allowed: ["--latest"])
+            let count: Int
+            if let value = flags["--latest"] {
+                guard let parsed = Int(value), (1...50).contains(parsed) else { throw MicError.invalidArguments }
+                count = parsed
+            } else { count = 3 }
+            try await monitor(latest: count)
         case "selection-prompt":
             guard tail.isEmpty else { throw MicError.invalidArguments }
             print(LocalModels.selectionInstructions)
@@ -264,10 +274,11 @@ struct NihoMic {
             let store = try PrivateStore()
             try await LocalModels.requireReady(asr: asr, store: store)
             try await LocalModels.requireBodyReady()
-            let pipeline = Pipeline(store: store, asr: asr,
+            let sessionID = UUID().uuidString.lowercased()
+            let pipeline = Pipeline(store: store, asr: asr, sessionID: sessionID,
                                     eventContext: try readEventContext(flags["--event-context-file"]))
             try await resume(store, pipeline)
-            try await run(uid: uid, seconds: seconds, store: store, pipeline: pipeline)
+            try await run(uid: uid, seconds: seconds, store: store, pipeline: pipeline, sessionID: sessionID)
         default: throw MicError.invalidArguments
         }
     }
@@ -361,6 +372,61 @@ struct NihoMic {
         }
     }
 
+    static func monitor(latest: Int) async throws {
+        while true {
+            let snapshot = try MonitorSnapshot.load(latest: latest)
+            print("\u{001B}[2J\u{001B}[H", terminator: "")
+            print("にほちゃんマイク｜ライブ確認　\(Date().formatted(date: .abbreviated, time: .standard))")
+            if let status = snapshot.status, status.isCurrentProcess {
+                if status.recording {
+                    let elapsed = max(0, Date().timeIntervalSince(status.segmentStartedAt))
+                    let remaining = max(0, Int(ceil(status.segmentSeconds - elapsed)))
+                    print("● 録音中　次の区切りまで約\(remaining)秒　入力: \(terminalSafe(status.inputUID))")
+                } else { print("○ 録音停止・保存済み区切りを処理中") }
+                let stage: String
+                switch status.stage {
+                case "audioCheck": stage = "音声診断中"
+                case "transcribing": stage = "文字起こし中"
+                case "summarizing": stage = "内部要約・採用判断・投稿案を作成中"
+                default: stage = "待機中"
+                }
+                print("処理: \(stage)　処理待ち: \(status.pendingSegments)区間")
+                if let transcript = snapshot.processingTranscript {
+                    print("\n処理中の文字起こし:\n\(terminalSafe(transcript))")
+                }
+            } else if snapshot.status == nil {
+                print("? 録音状態は未確認（この機能に対応した run の起動後から表示）")
+            } else { print("○ 停止中") }
+            print("\n直近の結果（\(snapshot.items.count)件）")
+            for item in snapshot.items.reversed() {
+                let record = item.record
+                let trace = item.trace
+                print("\n──── \(record.audioEndedAt.formatted(date: .abbreviated, time: .standard)) / \(record.segmentID.prefix(12)) ────")
+                print("文字起こし: \(terminalSafe(item.transcript ?? "（録音段階で見送り・保存なし・期限切れ）"))")
+                print("内部要約: \(terminalSafe(trace?.internalSummary ?? "（なし）"))")
+                if let decision = trace?.selectionDecision, let reason = trace?.selectionReason {
+                    print("採用判断: \(decision == "use" ? "使用" : "見送り") / \(terminalSafe(reasonDescription(reason)))")
+                    if let explanation = trace?.selectionExplanation { print("判断理由: \(terminalSafe(explanation))") }
+                } else {
+                    print("採用判断: 見送り / \(terminalSafe(reasonDescription(record.reason)))")
+                }
+                let candidate = trace?.candidateText ?? ""
+                print("投稿案: \(terminalSafe(candidate.isEmpty ? "（なし）" : candidate))")
+                print("最終結果: \(record.decision == "publish" ? "採用・Mac内に記録" : "見送り") / \(terminalSafe(reasonDescription(record.reason)))")
+                if record.decision == "publish" { print("最終短文: \(terminalSafe(record.text))") }
+            }
+            print("\nこのウィンドウだけを閉じる: Ctrl-C　｜　録音停止は録音元のウィンドウで Ctrl-C")
+            fflush(stdout)
+            try await Task.sleep(for: .seconds(2))
+        }
+    }
+
+    static func terminalSafe(_ value: String) -> String {
+        String(String.UnicodeScalarView(value.unicodeScalars.filter {
+            $0.value == 9 || $0.value == 10 || ($0.value >= 32 && $0.value != 127)
+        }))
+    }
+
     static func resume(_ store: PrivateStore, _ pipeline: Pipeline) async throws {
         for url in try store.pendingAudio() {
             let attributes = try FileManager.default.attributesOfItem(atPath: url.path)
@@ -370,7 +436,7 @@ struct NihoMic {
         }
     }
 
-    static func run(uid: String, seconds: Double, store: PrivateStore, pipeline: Pipeline) async throws {
+    static func run(uid: String, seconds: Double, store: PrivateStore, pipeline: Pipeline, sessionID: String) async throws {
         let flag = StopFlag()
         signal(SIGINT, SIG_IGN); signal(SIGTERM, SIG_IGN)
         let interrupt = DispatchSource.makeSignalSource(signal: SIGINT, queue: .global())
@@ -379,13 +445,19 @@ struct NihoMic {
         interrupt.resume(); terminate.resume()
         defer { interrupt.cancel(); terminate.cancel() }
         let recorder = try WindowRecorder(uid: uid, directory: store.audioDirectory)
+        let status = try RecordingStatusWriter(store: store, status: RecordingStatus(pid: getpid(), sessionID: sessionID,
+                                                                                   inputUID: uid, segmentSeconds: seconds))
+        defer { status.update { $0.recording = false; $0.stage = "stopped"; $0.processingSegmentID = nil } }
         try await recorder.start()
+        status.update { $0.recording = true }
+        do { try status.check() } catch { _ = recorder.stop(); throw error }
         print("録音中 ● 指定した入力機器のみ使用しています。停止: Ctrl-C")
         var previous: Task<Void, Error>?
         let pending = PendingCounter()
         var failure: Error?
         var boundary = ContinuousClock.now.advanced(by: .milliseconds(Int64(seconds * 1000)))
         var cleanup = ContinuousClock.now.advanced(by: .seconds(60))
+        var heartbeat = ContinuousClock.now.advanced(by: .seconds(2))
         func enqueue(_ url: URL, ended: Date) {
             let preceding = previous
             pending.increment()
@@ -393,7 +465,9 @@ struct NihoMic {
                 defer { pending.decrement() }
                 do {
                     if let preceding { try await preceding.value }
-                    try await pipeline.process(url, endedAt: ended, alreadyArchived: true)
+                    try await pipeline.process(url, endedAt: ended, alreadyArchived: true) { stage, id in
+                        status.update { $0.stage = stage.rawValue; $0.processingSegmentID = id }
+                    }
                 } catch { flag.stop(); throw error }
             }
         }
@@ -407,7 +481,13 @@ struct NihoMic {
                     }
                     if let url = try recorder.rotate() { enqueue(url, ended: Date()) }
                     boundary = ContinuousClock.now.advanced(by: .milliseconds(Int64(seconds * 1000)))
+                    status.update { $0.segmentStartedAt = Date(); $0.pendingSegments = pending.count }
                     print("録音中 ● 次の区切りへ進みました。")
+                }
+                if ContinuousClock.now >= heartbeat {
+                    status.update { $0.pendingSegments = pending.count }
+                    try status.check()
+                    heartbeat = ContinuousClock.now.advanced(by: .seconds(2))
                 }
                 if ContinuousClock.now >= cleanup {
                     try await pipeline.expire(); cleanup = ContinuousClock.now.advanced(by: .seconds(60))
@@ -417,11 +497,17 @@ struct NihoMic {
         } catch { failure = error }
         let last = recorder.stop()
         let lastEnded = Date()
+        status.update { $0.recording = false; $0.pendingSegments = pending.count + (last == nil ? 0 : 1) }
         print("録音停止。保存済み区切りの処理を完了します。")
         if let previous { try await previous.value }
         if let failure { throw failure }
-        if let last { try await pipeline.process(last, endedAt: lastEnded, alreadyArchived: true) }
+        if let last {
+            try await pipeline.process(last, endedAt: lastEnded, alreadyArchived: true) { stage, id in
+                status.update { $0.stage = stage.rawValue; $0.processingSegmentID = id }
+            }
+        }
         try store.expire()
+        try status.check()
         print("停止しました。")
     }
 }

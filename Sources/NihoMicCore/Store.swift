@@ -6,18 +6,29 @@ public struct LocalRecord: Codable, Sendable {
     public let segmentID: String
     public let generatedAt: Date
     public let audioEndedAt: Date
+    public let speechEndedAt: Date?
+    public let sessionID: String?
     public let decision: String
     public let topicKey: String
     public let text: String
     public let reason: String
-    public init(segmentID: String, generatedAt: Date = Date(), audioEndedAt: Date, decision: String, topicKey: String = "", text: String = "", reason: String) {
+    public init(segmentID: String, generatedAt: Date = Date(), audioEndedAt: Date, speechEndedAt: Date? = nil, sessionID: String? = nil,
+                decision: String, topicKey: String = "", text: String = "", reason: String) {
         self.segmentID = segmentID; self.generatedAt = generatedAt; self.audioEndedAt = audioEndedAt
+        self.speechEndedAt = speechEndedAt
+        self.sessionID = sessionID
         self.decision = decision; self.topicKey = topicKey; self.text = text; self.reason = reason
     }
 }
 
 /// Ephemeral review data. It is kept beside the raw transcript and expires with it.
 public struct ReviewTrace: Codable, Sendable {
+    public let internalSummary: String?
+    public let internalTopic: String?
+    public let internalEvidence: String?
+    public let internalReason: String?
+    public let topicSourceSegmentID: String?
+    public let topicSourceEvidence: String?
     public let selectionDecision: String?
     public let selectionReason: String?
     public let selectedTopic: String?
@@ -27,8 +38,13 @@ public struct ReviewTrace: Codable, Sendable {
     public let candidateText: String
     public let normalizedText: String
     public let gateReason: String
-    public init(selectionDecision: String? = nil, selectionReason: String? = nil, selectedTopic: String? = nil, selectionExplanation: String? = nil, selectionEvidence: String? = nil,
+    public init(internalSummary: String? = nil, internalTopic: String? = nil, internalEvidence: String? = nil, internalReason: String? = nil,
+                topicSourceSegmentID: String? = nil, topicSourceEvidence: String? = nil,
+                selectionDecision: String? = nil, selectionReason: String? = nil, selectedTopic: String? = nil, selectionExplanation: String? = nil, selectionEvidence: String? = nil,
                 candidateTopic: String = "", candidateText: String = "", normalizedText: String = "", gateReason: String) {
+        self.internalSummary = internalSummary; self.internalTopic = internalTopic
+        self.internalEvidence = internalEvidence; self.internalReason = internalReason
+        self.topicSourceSegmentID = topicSourceSegmentID; self.topicSourceEvidence = topicSourceEvidence
         self.selectionDecision = selectionDecision; self.selectionReason = selectionReason
         self.selectedTopic = selectedTopic; self.selectionExplanation = selectionExplanation
         self.selectionEvidence = selectionEvidence
@@ -177,6 +193,46 @@ public final class PrivateStore {
         guard manager.fileExists(atPath: url.path) else { return nil }
         try secure(url)
         return try decoder.decode(ReviewTrace.self, from: Data(contentsOf: url))
+    }
+
+    public func recentContext(before endedAt: Date, sessionID: String?, excluding id: String? = nil) throws -> [ContextEntry] {
+        guard let sessionID else { return [] }
+        let records = try records().filter { $0.sessionID == sessionID }
+        let sessionSegmentIDs = Set(records.map(\.segmentID))
+        let speechTimes = records.compactMap { record -> Date? in
+            guard record.segmentID != id else { return nil }
+            if let speech = record.speechEndedAt { return speech }
+            if ["audio_too_short", "no_speech", "insufficient_speech", "low_speech_confidence"].contains(record.reason) { return nil }
+            return record.audioEndedAt
+        }
+        guard let start = ContextWindow.continuityStart(speechTimes: speechTimes, at: endedAt) else { return [] }
+        var entries: [ContextEntry] = []
+        for record in records where record.segmentID != id
+            && (record.speechEndedAt ?? record.audioEndedAt) <= endedAt
+            && (record.speechEndedAt ?? record.audioEndedAt) >= start {
+            let trace = try reviewTrace(id: record.segmentID)
+            let memoSummary = trace?.internalSummary ?? ""
+            let memoTopic = trace?.internalTopic ?? ""
+            let summary: String
+            let topic: String
+            if !memoSummary.isEmpty && !memoTopic.isEmpty {
+                summary = memoSummary; topic = memoTopic
+            } else if record.decision == "publish", !record.text.isEmpty,
+                      !record.topicKey.isEmpty {
+                summary = record.text; topic = record.topicKey
+            } else { continue }
+            let citation: TopicCitation?
+            if let sourceID = trace?.topicSourceSegmentID, let source = trace?.topicSourceEvidence,
+               sourceID.range(of: #"^[a-f0-9]{64}$"#, options: .regularExpression) != nil,
+               sessionSegmentIDs.contains(sourceID),
+               source.contains(topic), source.count <= 240,
+               let original = try transcript(id: sourceID), original.contains(source) {
+                citation = TopicCitation(segmentID: sourceID, topic: topic, excerpt: source)
+            } else { citation = nil }
+            entries.append(ContextEntry(segmentID: record.segmentID, endedAt: record.speechEndedAt ?? record.audioEndedAt,
+                                        topic: topic, summary: summary, topicCitation: citation))
+        }
+        return ContextWindow.recent(entries, at: endedAt, speechTimes: speechTimes)
     }
 
     public func pendingAudio() throws -> [URL] {

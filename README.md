@@ -16,8 +16,10 @@ NIHO 鎌倉で交わされている話の要点を、連絡先や詳しい住所
 
 ## MacBook での取得
 
+この機能は現在ドラフトPRで検証中です。現地試験では次の開発ブランチを取得します。
+
 ```bash
-git clone https://github.com/niho-life/niho-mic.git
+git clone --branch feat/context-aware-local-summaries https://github.com/niho-life/niho-mic.git
 cd niho-mic
 swift build -c release
 swift run niho-mic --help

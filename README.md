@@ -105,6 +105,14 @@ Apple単独は速い一方、実録音で語句の取り違えがありました
 .build/release/niho-mic review-audio --audio '<5分以内の音声>' --asr gemini
 ```
 
+文字起こしだけをローカルのテキストファイルに保存済みなら、音声認識をやり直さず要約を試せます。投稿候補は80〜140字を目指し、根拠からその長さの具体的な内容を作れない場合は見送ります。話者の名乗りが確認できるときは名前や肩書も使えます。
+
+```bash
+.build/release/niho-mic review-text --transcript-file '<ローカルの文字起こし.txt>'
+```
+
+`review-text` も保存ログを変更しません。実際の文字起こしを公開リポジトリには置かないでください。
+
 採用した短文は `~/Library/Application Support/life.niho.mic/logs/YYYY-MM-DD.jsonl` に記録されます。自分のMac上で見る場合の例:
 
 ```bash
@@ -125,6 +133,7 @@ jq -r 'select(.decision == "publish") | .text' "$HOME/Library/Application Suppor
 open -e "$HOME/Documents/niho-mic-selection-prompt.txt"
 open -e "$HOME/Documents/niho-mic-summary-prompt.txt"
 .build/release/niho-mic preview --segment '<inspectに表示された64桁の区切りID>' --selection-prompt-file "$HOME/Documents/niho-mic-selection-prompt.txt" --prompt-file "$HOME/Documents/niho-mic-summary-prompt.txt"
+.build/release/niho-mic review-text --transcript-file '<ローカルの文字起こし.txt>' --selection-prompt-file "$HOME/Documents/niho-mic-selection-prompt.txt" --prompt-file "$HOME/Documents/niho-mic-summary-prompt.txt"
 ```
 
 `selection-prompt` は使用判定と話題選択、`prompt` は要約生成の指示です。要約生成は「話題: ...」と「本文: ...」の2行だけを受け付けます。以前に保存したプロンプトを使う場合もこの出力形式を指示してください。最終の安全性確認の指示は同じ `LocalModels.swift` の `outputSafetyInstructions` にあります。候補の連絡先・詳しい住所・センシティブ内容・140字などの最終検査は `preview` でも有効です。編集するファイルには実際の会話や文字起こしを貼り付けず、公開リポジトリにも追加しないでください。

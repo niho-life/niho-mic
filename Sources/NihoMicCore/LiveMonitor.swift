@@ -15,6 +15,7 @@ public struct RecordingStatus: Codable, Sendable {
     public var segmentStartedAt: Date
     public let segmentSeconds: Double
     public var recording = false
+    public var captureMode: String?
     public var stage = "idle"
     public var processingSegmentID: String?
     public var pendingSegments = 0
@@ -29,6 +30,7 @@ public struct RecordingStatus: Codable, Sendable {
         self.pid = pid; self.sessionID = sessionID; self.inputUID = inputUID
         self.startedAt = now; self.updatedAt = now; self.segmentStartedAt = now
         self.segmentSeconds = segmentSeconds
+        self.captureMode = "standby"
     }
 }
 

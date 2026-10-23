@@ -559,6 +559,36 @@ final class CoreTests: XCTestCase {
         }
     }
 
+    func testMonitorReadsRecordingAndCompletedReviewWhileWriterOwnsStore() throws {
+        try withStore { store, root in
+            let session = "synthetic-session"
+            let id = String(repeating: "c", count: 64)
+            let writer = try RecordingStatusWriter(store: store,
+                status: RecordingStatus(pid: getpid(), sessionID: session, inputUID: "synthetic-input", segmentSeconds: 180))
+            writer.update { $0.recording = true; $0.stage = ProcessingStage.summarizing.rawValue; $0.processingSegmentID = id }
+            try writer.check()
+            try store.writeTranscript("庭のシダは日陰で育つそうです。", id: id)
+
+            let processing = try MonitorSnapshot.load(root: root)
+            XCTAssertTrue(processing.status?.isLive == true)
+            XCTAssertEqual(processing.status?.stage, ProcessingStage.summarizing.rawValue)
+            XCTAssertEqual(processing.processingTranscript, "庭のシダは日陰で育つそうです。")
+
+            try store.writeReviewTrace(ReviewTrace(internalSummary: "庭のシダを日陰で育てる話。",
+                                                   selectionDecision: "use", selectionReason: "ok",
+                                                   candidateText: "庭のシダは日陰で育つんだって。", gateReason: "ok"), id: id)
+            try store.append(LocalRecord(segmentID: id, audioEndedAt: Date(), sessionID: session,
+                                         decision: "publish", topicKey: "庭のシダ", text: "庭のシダは日陰で育つんだって。", reason: "ok"))
+            writer.update { $0.stage = ProcessingStage.idle.rawValue; $0.processingSegmentID = nil }
+            let completed = try MonitorSnapshot.load(root: root)
+            XCTAssertEqual(completed.items.count, 1)
+            XCTAssertEqual(completed.items.first?.transcript, "庭のシダは日陰で育つそうです。")
+            XCTAssertEqual(completed.items.first?.trace?.internalSummary, "庭のシダを日陰で育てる話。")
+            XCTAssertEqual(completed.items.first?.record.decision, "publish")
+            XCTAssertNil(completed.processingTranscript)
+        }
+    }
+
     func testExpiryDeletesOnlyExpiredPrivateArtifacts() throws {
         try withStore { store, _ in
             let audio = store.audioDirectory.appendingPathComponent("synthetic.caf")

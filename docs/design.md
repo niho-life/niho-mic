@@ -44,6 +44,7 @@
 - `review-audio --audio <file> --asr <engine>`: 同じ短い音声で文字起こし・使用判定・要約候補・最終チェックを再試行する。ログは変更しない。Apple / Whisper / Gemini の比較にも使う。
 - `review-text --transcript-file <file>`: ローカルの文字起こしから使用判定・要約だけを再試行する。ログは変更しない。
 - `inspect`: 保存済み文字起こし、内部要約と継続話題、使用判定と理由、投稿候補、最終確認、記録状態をローカル端末に表示する。旧版の候補は保存されていない場合がある。
+- `monitor`: 録音元とは別の端末で、専用保存先の状態ファイルと処理済み区間を読み取り、録音状態・区切りまでの残り時間・処理段階・文字起こし・内部要約・採用判断と理由・投稿案・最終結果を更新表示する。読み取り専用で、Ctrl-C は表示だけを終了する。状態の更新が止まれば停止中と表示する。
 - `internal-prompt`、`selection-prompt`、`prompt` と `preview --segment <ID> [--event-context-file <file>] [--internal-prompt-file <file>] [--selection-prompt-file <file>] [--prompt-file <file>]`: 内部要約、使用判定、投稿案の指示を表示し、保存済み文字起こしに編集した指示を試す。予定はログへ保存しないため、予定込みの再現時には同じファイルを再指定する。採用ログは変更しない。
 - 合成音声と合成文字起こしだけを公開 CI で使う。現地の実会話はリポジトリと CI に入れない。
 
